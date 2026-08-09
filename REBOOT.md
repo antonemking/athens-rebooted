@@ -123,7 +123,7 @@ Shipped and visible: Roam-grade outliner (textarea + 3-stage instaparse parser),
 
 Shipped but **hidden behind Settings feature flags** (the command-center surface they died building): tasks, task queries (kanban + table), properties, comments, reactions, notifications, time-travel controls, cover photos. These are client-side flags; no rebuild is needed to try them.
 
-Known feature gaps: markdown export does not exist (import only), image upload is Electron-only (files written to local disk as `file://` URLs; broken for web/multiplayer), search is a linear regex scan over all blocks capped at 20 results with no index or ranking, templates are shallow (`;;` copies an existing block subtree), and there is **no plugin system of any kind**; the HTTP API is the only out-of-process extension surface.
+Known feature gaps: markdown export does not exist (import only), image upload is Electron-only (files written to local disk as `file://` URLs; broken for web/multiplayer), search is an in-browser linear regex scan over all blocks capped at 20 results with no index or ranking, templates are shallow (`;;` copies an existing block subtree), and there is **no plugin system of any kind**; the HTTP API is the only out-of-process extension surface.
 
 ### 3.8 Tests, CI, docs
 
@@ -160,14 +160,15 @@ The strategic irony: the founder's third reason for quitting was that AI-native 
 
 ## 5. Honest liabilities
 
-1. **Sync durability gaps** (section 3.5): volatile offline queue, LWW conflicts, 2-try reconnect. Fine internally; fix before making promises to clients.
+1. **Sync durability gaps** (section 3.5): volatile offline queue, LWW conflicts, 2-try reconnect. Fine internally; fix before making promises to clients. Note for architecture debates: all of these live in the ClojureScript client or the shared protocol layer, not in the server (see 7.2).
 2. **Fluree fossil**: the event log lives in an abandoned beta of a discontinued product line, pinned to an image their own compose file says cannot be upgraded. It works when pinned; it should eventually be replaced by a boring append log (the seam is four functions; see roadmap M1.5).
-3. **Search** is the biggest product liability: linear regex scan, 20-result cap, no server-side endpoint.
+3. **Search** is the biggest product liability: a linear regex scan over every block datom, 20-result cap, no index or ranking, **running in the browser** (`src/cljs/athens/db.cljs:344,387`), and no server-side endpoint at all. The fix is not a new search service: M1.5 already brings SQLite into the stack, so **SQLite FTS5** provides ranked server-side search with zero additional containers. Implementation note: the event log stores opaque `(uuid, EDN-string)` pairs, so FTS needs a block-string projection maintained off the same single-writer path that appends events, not an index over the log itself.
 4. **No export**; the exit path is a third-party tool. An export endpoint should exist before any client data lives in a graph.
 5. **Images broken for web/multiplayer.**
 6. **Dead CI, stale e2e, dead upstream**: no fixes are coming from anywhere; the fork is on its own (mitigated by the small, well-tested core surface).
 7. **Telemetry key** in the served HTML until first rebuild.
-8. **EPL-1.0 license** (see 7.3): compatible with the plan, but it travels with the code.
+8. **Client-side rendering is the real performance ceiling.** Because the whole graph lives in the browser and reads never round-trip, backend work cannot improve the two slowest interactions: opening a page with thousands of linked references, and rendering very long child lists. `react-window` is already a dependency but is applied in exactly one place (`src/js/components/AllPagesTable/AllPagesTable.tsx`); reference lists and block children are unvirtualized. The honest mitigation is virtualized/paginated reference rendering on the client, which is separate from everything in the roadmap below.
+9. **EPL-1.0 license** (see 7.3): compatible with the plan, but it travels with the code.
 
 ---
 
@@ -200,6 +201,10 @@ The strategic irony: the founder's third reason for quitting was that AI-native 
 Agent labor makes *writing* a port nearly free. It does not make the port cheap, because the surviving costs are spec extraction and verification: the editor's behavior (caret math, selection, slash menus, paste, drag) exists only as code and feel, and parity is established by a human living in it. The bottleneck is owner attention, not engineering hours.
 
 Elixir specifically: the right answer for a greenfield collaborative server (Phoenix channels/presence/OTP are superb), the wrong answer for this reboot. It replaces the smallest, healthiest layer and does not help the hard 40% (the editor is ClojureScript; LiveView's server-round-trip model is an anti-fit for caret-heavy outliner editing, so a port ends up writing a TypeScript editor anyway).
+
+**The decisive test: locate the weaknesses, then ask which layer they live in.** Every sync weakness catalogued in section 3.5 is in ClojureScript client code or shared protocol semantics, not in the server: the volatile offline queue is an in-memory atom in `self_hosted/client.cljs`; the 2-try give-up is `MAX_RECONNECT_TRY` in the same file; the optimistic-apply rollback lives in `events/remote.cljs`; last-write-wins is a semantic choice in the shared `.cljc` resolvers. **Porting the JVM server to Elixir fixes zero of them.** The mirror image also holds: the things a BEAM runtime is genuinely great at (realtime multiplayer, presence, WebSocket concurrency, fault isolation, async pipelines) map precisely onto the ~1.9k-line Clojure server, which is the smallest and healthiest part of this codebase. A port would spend its entire budget rewriting the one layer that already works. Athens also already satisfies the standard architectural advice for this product category on its own terms: the recommendation to use "CRDT or operation-log sync" is met by the existing 12-op append-only event log.
+
+Note when reading external performance critiques of this product category: analyses of *Roam Research* (proprietary, different codebase, different architecture) are not evidence about Athens. Athens is local-first in a way Roam is not, which changes where the bottlenecks sit (see the liability on client-side rendering in section 5).
 
 **Rewrite triggers** (evaluate after living with the system; any one suffices): (1) a deliberate pivot to a closed proprietary product; (2) mobile-first becomes a real client requirement; (3) hosting economics at 50+ tenants, where BEAM-style multi-tenancy would beat container-per-client. If triggered, the move is a greenfield implementation against the Athens protocol as spec (the 12-op vocabulary + internal representation), clean-room where license escape is required, with the running rebooted system as the parity oracle.
 
@@ -248,7 +253,7 @@ Sequence: **M0 resurrect → M2a agent bridge v0 → M1 own the build → M1.5 r
 
 ### M2b: Full agent toolset (~12-18 h)
 
-- Extend `api.clj` (same flag + auth), each endpoint 10-25 lines reusing verified `common_db` fns: `/api/pages`, `/api/search` (linear scan + breadcrumbs; FTS later), `/api/backlinks`, `/api/block/save` + `/api/block/remove` (path-write can only append; writing an existing uid resolves to a move), `/api/export`, stretch `/api/query` (read-only datalog escape hatch).
+- Extend `api.clj` (same flag + auth), each endpoint 10-25 lines reusing verified `common_db` fns: `/api/pages`, `/api/search` (linear scan + breadcrumbs to ship it; upgrade to SQLite FTS5 over a block-string projection once M1.5 lands, rather than adding a search service), `/api/backlinks`, `/api/block/save` + `/api/block/remove` (path-write can only append; writing an existing uid resolves to a move), `/api/export`, stretch `/api/query` (read-only datalog escape hatch).
 - First-ever api.clj tests: op-shape units + round-trip integration against in-memory mode (skips Fluree; ideal for tests).
 - MCP v1 adds: `athens_search`, `athens_backlinks`, `athens_pages`, `athens_block_edit`, `athens_tasks` (property-backed), `athens_export`. Optional: a 30-line WS hello so "claude" appears in the presence avatars; a Streamable-HTTP mode behind Caddy for claude.ai use, which is also the per-client hosted story (one stack + one sidecar per client, config = env vars).
 - **Acceptance:** Claude answers "what links to [[Client X]]?" and "what tasks are open?" correctly; export markdown matches the UI.
