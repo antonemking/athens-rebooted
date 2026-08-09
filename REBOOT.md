@@ -119,7 +119,9 @@ None. Zero. No PWA manifest, no service worker, **not a single `@media` query in
 
 ### 3.7 Feature inventory
 
-Shipped and visible: Roam-grade outliner (textarea + 3-stage instaparse parser), daily notes, bidirectional links with linked and unlinked references, block references and embeds, force-directed graph view (global and per-page), command palette ("Athena"), right sidebar, keyboard-driven editing, KaTeX (with chemistry extension), code blocks with syntax highlighting, YouTube/iframe embeds, TODO checkboxes, Roam JSON import, HTML-to-markdown paste, themes, presence avatars and shared editing.
+Shipped and visible: Roam-grade outliner (textarea + 3-stage instaparse parser), daily notes, bidirectional links with linked and unlinked references, block references and embeds, force-directed graph view (global and per-page), command palette ("Athena"), right sidebar, keyboard-driven editing, KaTeX (with chemistry extension), fenced code blocks, YouTube/iframe embeds, TODO checkboxes, Roam JSON import, HTML-to-markdown paste, themes, presence avatars and shared editing.
+
+Correction worth noting, because it is easy to assume otherwise: **code blocks have no syntax highlighting.** `src/cljs/athens/parse_renderer.cljs:264-272` parses the language tag, logs it under a debug flag, then discards it and emits plain `[:pre [:code text]]`. `highlight.js`, `react-highlight.js`, `codemirror`, and `react-codemirror2` are all pinned in `package.json` but imported nowhere in `src/`; the only trace is a reader-discarded `#_[:> CodeMirror ...]` sketch and a TODO for issue #989. All four are dead weight and can be dropped at M1.
 
 Shipped but **hidden behind Settings feature flags** (the command-center surface they died building): tasks, task queries (kanban + table), properties, comments, reactions, notifications, time-travel controls, cover photos. These are client-side flags; no rebuild is needed to try them.
 
@@ -271,7 +273,7 @@ Sequence: **M0 resurrect → M2a agent bridge v0 → M1 own the build → M1.5 r
 
 ## 10. Open questions for the next planning session
 
-1. **Name and brand.** Keep "Athens" lineage visible (credibility, searchability) or rename now (trademark hygiene, own identity)? Renaming is permitted and cheap today, expensive later.
+1. **Name and brand.** Working name is **Sorbet**. Keep "Athens" lineage visible (credibility, searchability) or commit to the rename now? Renaming is permitted and cheap today, expensive later. One flag on Sorbet: it collides with [Stripe's Ruby type-checker](https://sorbet.org), which is well known among exactly the engineers who are the client audience. Not disqualifying, worth deciding deliberately rather than discovering on a proposal.
 2. **Deployment target for M0.** Home lab / VPS / Tailscale-only? Determines whether TLS (M1's Caddy work) gets pulled earlier.
 3. **M2a-first vs M1-first.** The proposal front-loads the agent demo (M2a before M1) because it requires no builds; flip the order if telemetry stripping or TLS is a prerequisite for any real data entering the graph.
 4. **What data goes in first.** Personal command center only, or seed a real (low-stakes) engagement workspace to test the client-facing story?
@@ -280,6 +282,36 @@ Sequence: **M0 resurrect → M2a agent bridge v0 → M1 own the build → M1.5 r
 7. **Success metric for the two-week gate** after M2a: what does "indispensable" mean concretely (daily notes written? agent round-trips per week? one client demo delivered?).
 
 ---
+
+## 11. Backlog: candidate features beyond the roadmap
+
+Ideas assessed and deliberately parked. Nothing here is scheduled; each entry records the assessment so the thinking does not have to be redone.
+
+### B1. Connect to GitHub repos for client documentation
+
+**The need.** Editing documentation through the GitHub web UI is cumbersome, and this happens constantly across multiple client codebases: README updates, wiki and doc corrections, no code changes. The wish is to browse repo files IDE-style inside the tool, edit docs, and review a diff in a side panel.
+
+**Assessment: valuable need, but mostly the wrong tool to satisfy it.** The idea splits into three features with very different economics (seam audit performed against this codebase):
+
+| Sub-feature | Cost | Verdict |
+|---|---|---|
+| Mirror repo markdown into the graph as reference pages | M | **The part worth building** |
+| Side-panel raw-text editor with diff view | L | Skip; competes with free, better tools |
+| Commit / PR flow from inside the app | XL | Skip; structurally unsound here |
+
+**Why the editing half is a trap.** Three findings from the audit, in order of severity:
+
+1. **The round trip cannot be lossless.** `text-to-blocks` (`src/cljs/athens/views/blocks/internal_representation.cljs:123`) is an indentation parser, not a markdown parser: `#` headings survive as strings that the block parser then reads as *hashtag links, creating spurious pages*, and fenced code blocks explode into sibling blocks. Worse, **no blocks-to-markdown serializer exists anywhere in the codebase**. Lossy ingestion plus a from-scratch serializer means a no-op edit produces a spurious diff, which makes the resulting PRs unreviewable. That is the structural blocker; the GitHub API plumbing is the easy part.
+2. **"Read-only" is not a concept in the data model.** There is no read-only page and no per-block write guard; every block is editable by construction. Enforcement would have to be built, not enabled.
+3. **The sidebar fights this.** Sidebar items are stored as graph blocks (properties under `athens/right-sidebar` on the user page) and filtered through `common-db/block-exists?` (`right_sidebar/shared.cljs:70-71`), so an item not backed by a real entity **silently disappears with no error**. Transient state such as an editor buffer, dirty flag, or scroll position has nowhere natural to live, since that store is the synced graph. Also note CodeMirror is *not* a free head start: it is unimported, and pinned at the legacy v5.
+
+**Recommended shape if this is ever built.** A one-way **reference mirror**: one page per document, raw text preserved rather than outlined, with provenance stored as properties (`athens/repo/owner`, `/name`, `/path`, `/sha`, `/branch`) using the existing `:block/property-of` + `:block/key` model, which round-trips cleanly through internal representation and is indexed by `get-reactive-instances-of-key-value`. Ingestion needs **no new server endpoint**: `POST /api/path/write` already accepts internal representation. The payoff is unified search across notes and client docs, and backlinks from a meeting note straight to the document under discussion.
+
+Editing routes to Claude Code, which already performs byte-exact file edits and opens PRs. The tool supplies the context and the entry point; GitHub supplies the diff review, where the tooling is already excellent. For "browse like an IDE," `github.dev` (press `.` on any repo) is one keystroke and free. A cheap later addition, if the side-panel diff itch persists, is rendering an existing PR's patch read-only in the sidebar (**S**: GitHub computes the diff, so no diff library is needed; none exists in the codebase today).
+
+**Hard constraint.** A token that can write to client repositories must live server-side, in the MCP sidecar, as a fine-grained GitHub App scoped per repository, never a PAT in the browser. The app's own auth is a single shared password kept in localStorage and base64-encoded into share URLs (section 3.4); client repository write access cannot sit behind that.
+
+**Honest scoping note.** The cross-referencing benefit is narrower than it first appears, because an agent can already read GitHub directly. The mirror's real and defensible value is unified search plus backlinks from notes, not agent access.
 
 ## Appendix A: Key file map
 
