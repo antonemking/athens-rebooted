@@ -44,6 +44,12 @@ dist
 # docker compose templating backup
 docker-compose.yml.bk
 
+# environment files with real secrets (ops/.env.example is the committed template)
+.env
+
+# cold backup tarballs
+/ops/backup/archives/
+
 # dev mode server data
 athens-data/*
 !athens-data/README.md
