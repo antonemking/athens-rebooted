@@ -1,12 +1,14 @@
-# Athens Reboot: Investigative Report
+# Lorefold: Investigative Report and Reboot Plan
 
 **Repo:** `antonemking/athens-rebooted`, a fork of `athensresearch/athens` frozen at `v2.1.0-beta.5` (HEAD `b463a97`, 2022-12-12, the final upstream commit).
 **Prepared:** 2026-08-09, from a deep codebase exploration (build health, runtime architecture, product surface) plus public-record research on the company.
-**Status of this document:** Investigative report and standing proposal. Nothing in the roadmap section has been started. This is the planning foundation, not a work log.
+**Status of this document:** Investigative report and standing proposal. Positioning revised 2026-08-09: what began as "reboot Athens as a personal command center" is now **Lorefold, a decision intelligence platform**. Sections 1, 5, and 8-10 carry the reframe; the investigation sections (2-4, 6-7) stand as written. Nothing in the roadmap section has been started.
 
 ---
 
 ## 1. Executive summary
+
+**What this is becoming.** Lorefold is a decision intelligence platform: the living memory of an organization. It connects the systems where work actually happens (GitHub, Slack, Drive, docs, code), organizes that context into a knowledge graph, and records **decisions as first-class objects linked to their evidence**. The questions it exists to answer are not "where is that document" but "why did we make this decision," "what is blocking the next release," "what are the biggest risks right now." It is not a note-taking app and not another chat interface; note capture is a surface, not the category. The archived Athens codebase is the substrate it gets built on, and the investigation below is the due diligence on that substrate.
 
 Athens was an open-source, Roam-style networked note-taking tool (ClojureScript + DataScript frontend, Clojure JVM collaboration server) built by a YC W21 company that raised $1.9M and stopped work in November 2022. It did not die of technical failure; it died of venture economics in a brutal market, mid-pivot into a team command-center product.
 
@@ -162,6 +164,8 @@ The strategic irony: the founder's third reason for quitting was that AI-native 
 
 ## 5. Honest liabilities
 
+**The decision-intelligence positioning inverts this list.** Under a personal command center, the items below were deferrable polish. For client workspaces holding organizational decision context, three findings become product-critical: every browser session receives the entire graph on connect, there is no permissions model of any kind (section 3.4), and retrieval is an unranked in-browser scan (items 3 and 8). The architectural consequence is recorded in section 8's decision-layer milestone: bulk ingested evidence should probably never live in the graph itself; the graph holds decisions and links, an evidence store holds the corpus. That single choice defuses the scale and search problems and shrinks the permissions surface to something one person can actually secure.
+
 1. **Sync durability gaps** (section 3.5): volatile offline queue, LWW conflicts, 2-try reconnect. Fine internally; fix before making promises to clients. Note for architecture debates: all of these live in the ClojureScript client or the shared protocol layer, not in the server (see 7.2).
 2. **Fluree fossil**: the event log lives in an abandoned beta of a discontinued product line, pinned to an image their own compose file says cannot be upgraded. It works when pinned; it should eventually be replaced by a boring append log (the seam is four functions; see roadmap M1.5).
 3. **Search** is the biggest product liability: a linear regex scan over every block datom, 20-result cap, no index or ranking, **running in the browser** (`src/cljs/athens/db.cljs:344,387`), and no server-side endpoint at all. The fix is not a new search service: M1.5 already brings SQLite into the stack, so **SQLite FTS5** provides ranked server-side search with zero additional containers. Implementation note: the event log stores opaque `(uuid, EDN-string)` pairs, so FTS needs a block-string projection maintained off the same single-writer path that appends events, not an index over the log itself.
@@ -180,7 +184,7 @@ The strategic irony: the founder's third reason for quitting was that AI-native 
 2. **Flip `:feature-flags {:api true}` and set a password via `CONFIG_EDN`**: instant machine API.
 3. **Toggle the hidden Settings flags** (tasks, properties, queries/kanban, comments, notifications): the command-center surface is already shipped, just switched off.
 4. **Backups**: the save/load/recover CLI and a cron wrapper already exist.
-5. **MCP bridge v0** over the existing REST API: daily-note append, page read/write/create, with edits attributed to "claude" and appearing live in the UI. No server changes required.
+5. **MCP bridge v0** over the existing REST API: daily-note append, page read/write/create, with edits attributed to "claude" and appearing live in the UI. No server changes required. (The bridge is the agent doorway; the decision ledger built on top of it is the differentiator.)
 6. **Strip PostHog, rebrand** at first frontend rebuild.
 
 ---
@@ -210,6 +214,8 @@ Note when reading external performance critiques of this product category: analy
 
 **Rewrite triggers** (evaluate after living with the system; any one suffices): (1) a deliberate pivot to a closed proprietary product; (2) mobile-first becomes a real client requirement; (3) hosting economics at 50+ tenants, where BEAM-style multi-tenancy would beat container-per-client. If triggered, the move is a greenfield implementation against the Athens protocol as spec (the 12-op vocabulary + internal representation), clean-room where license escape is required, with the running rebooted system as the parity oracle.
 
+The decision-intelligence reframe weakens the rewrite case further. The expensive, risky part of any port was always the editor; the reframe demotes the editor from core product to capture surface, while the parts a port would have to re-earn (the append-only event log, typed properties, datalog) are exactly the parts the new positioning leans on hardest.
+
 ### 7.3 License and attribution (EPL-1.0)
 
 - **Hosting** Athens for yourself or clients triggers no obligations (EPL-1.0 has no network copyleft).
@@ -220,7 +226,7 @@ Note when reading external performance critiques of this product category: analy
 
 ## 8. Proposed roadmap (PROPOSAL ONLY; nothing started; pending further planning)
 
-Sequence: **M0 resurrect → M2a agent bridge v0 → M1 own the build → M1.5 replace Fluree with SQLite → M2b full agent toolset.** The bridge splits in two because the existing REST API already supports the core demo with zero server changes, while search/backlinks/tasks need ~5 new endpoints, which first requires building the server from source. Estimated total: **~35-56 hours.**
+Sequence: **M0 resurrect → M2a agent bridge v0 → decision layer v0 → *(gate)* → M1 own the build → M1.5 replace Fluree with SQLite → M2b full agent toolset.** The bridge splits in two because the existing REST API already supports the core demo with zero server changes, while search/backlinks/tasks need ~5 new endpoints, which first requires building the server from source. The decision layer sits **before** the gate deliberately: M0 + M2a + decision records v0 all run on published images with zero compilation, so the actual thesis (decision intelligence, not note capture) gets tested before any expensive work starts. Estimated total: **~35-56 hours** of build work plus the decision-layer spec work.
 
 ### M0: Resurrect (~2-4 h)
 
@@ -234,9 +240,19 @@ Sequence: **M0 resurrect → M2a agent bridge v0 → M1 own the build → M1.5 r
 
 ### M2a: MCP bridge v0 (~1 day, no server changes)
 
-- `tools/athens-mcp/` in TypeScript (`@modelcontextprotocol/sdk`, stdio; env: `ATHENS_URL`/`ATHENS_USERNAME`/`ATHENS_PASSWORD`).
-- v0 tools over the existing API only: `athens_daily_append` (daily titles are `LLLL dd, yyyy` with zero-padded day, e.g. "August 09, 2026"), `athens_page_read` (internal representation + rendered markdown), `athens_page_write` (path upsert), `athens_page_create`. Markdown ↔ internal-representation codec in TS.
+- `tools/lorefold-mcp/` in TypeScript (`@modelcontextprotocol/sdk`, stdio; env: `LOREFOLD_URL`/`LOREFOLD_USERNAME`/`LOREFOLD_PASSWORD`).
+- v0 tools over the existing API only: `lorefold_daily_append` (daily titles are `LLLL dd, yyyy` with zero-padded day, e.g. "August 09, 2026"), `lorefold_page_read` (internal representation + rendered markdown), `lorefold_page_write` (path upsert), `lorefold_page_create`. Markdown ↔ internal-representation codec in TS.
 - **Acceptance:** Claude appends a note to today's daily page; it appears live in the browser attributed to "claude"; page reads round-trip as markdown.
+
+### Decision layer v0 (spec + one tool; runs on the M0 stack, nothing compiled)
+
+What separates Lorefold from a notes tool, sequenced before the gate:
+
+- **Architecture decision (owner call, agent-drafted spike): where does evidence live?** Recommended default: not in the graph. The graph holds decision objects and links; source-system URLs serve as evidence at first, a dedicated evidence store later. This resolves full-graph-on-connect and search, and shrinks the permissions surface. Written decision lands in `doc/`.
+- **Ingestion spike: adopt vs build.** Continuous ingestion of GitHub/Slack/Drive/docs means auth, pagination, rate limits, incremental sync, and permission mapping, times four. Evaluate standing on an existing OSS enterprise-search layer (Onyx/Danswer and peers) as the evidence store, with Lorefold owning only the decision ledger. Building four connectors solo is the classic way a one-person product dies; the pipes are commodity, the ledger is not.
+- **Decision object model spec:** `:entity/type "[[lorefold/decision]]"` plus properties: status (proposed / accepted / superseded / reversed), date, question, rationale, alternatives considered, participants, evidence links, supersedes / superseded-by. Rides the existing property model with **zero schema migration**, and the append-only log already records how each decision evolved. Spec includes the datalog for "why did we decide X" and "what decisions touch Y".
+- **`lorefold_decision_record` MCP tool (v0):** creates a decision object via `/api/path/write`, evidence as URLs (a Slack permalink is evidence; a PR link is evidence). **Zero connectors, zero new infrastructure.** Ingestion is an optimization on capture, not the thesis.
+- **Acceptance:** decisions from a live engagement recorded and queried for two weeks; "why did we decide X" answered from the graph, with evidence links, at least weekly. That is the gate.
 
 ### M1: Own the build (~14-23 h)
 
@@ -257,29 +273,52 @@ Sequence: **M0 resurrect → M2a agent bridge v0 → M1 own the build → M1.5 r
 
 - Extend `api.clj` (same flag + auth), each endpoint 10-25 lines reusing verified `common_db` fns: `/api/pages`, `/api/search` (linear scan + breadcrumbs to ship it; upgrade to SQLite FTS5 over a block-string projection once M1.5 lands, rather than adding a search service), `/api/backlinks`, `/api/block/save` + `/api/block/remove` (path-write can only append; writing an existing uid resolves to a move), `/api/export`, stretch `/api/query` (read-only datalog escape hatch).
 - First-ever api.clj tests: op-shape units + round-trip integration against in-memory mode (skips Fluree; ideal for tests).
-- MCP v1 adds: `athens_search`, `athens_backlinks`, `athens_pages`, `athens_block_edit`, `athens_tasks` (property-backed), `athens_export`. Optional: a 30-line WS hello so "claude" appears in the presence avatars; a Streamable-HTTP mode behind Caddy for claude.ai use, which is also the per-client hosted story (one stack + one sidecar per client, config = env vars).
+- MCP v1 adds: `lorefold_search`, `lorefold_backlinks`, `lorefold_pages`, `lorefold_block_edit`, `lorefold_tasks` (property-backed), `lorefold_export`. Optional: a 30-line WS hello so "claude" appears in the presence avatars; a Streamable-HTTP mode behind Caddy for claude.ai use, which is also the per-client hosted story (one stack + one sidecar per client, config = env vars).
 - **Acceptance:** Claude answers "what links to [[Client X]]?" and "what tasks are open?" correctly; export markdown matches the UI.
 
 ---
 
-## 9. Business fit
+## 9. Business model and customer sequence
 
-- **Internal command center (customer #1):** daily notes as the operating log, tasks/kanban for delivery, backlinks tying clients, calls, and decisions together. The features exist today behind flags.
-- **Client-facing value:** an "engagement workspace included" per client: a private collaborative graph where agents file meeting notes, research, and status, and the client watches it happen live. For an AI adoption and enablement practice, an agent-legible knowledge graph is a retrieval-credibility artifact no slide deck matches; the tool demos the practice.
-- **Income honesty:** hosted PKM subscriptions are the exact market Athens died in; do not resurrect that business model. The consultancy is the revenue engine; Athens is delivery infrastructure and differentiation. Per-client instances can carry a modest infrastructure line item; if the agent-workspace angle resonates in real engagements, productize *that* (setup + integration + agents), not notes hosting.
-- **Focus guard:** this is a side tool. Timebox each milestone; decision gate after M2a: if daily use plus the agent bridge does not feel indispensable within two weeks, stop at M0 and keep it as a free internal tool.
+**Category.** Decision intelligence, not note-taking and not hosted PKM. The note-taking market is the one Athens died in; the postmortem stands. "Why did we decide this" is a different buyer and a different budget line, and it happens to be the productized form of the consulting practice itself (retrieval and AI adoption): a decision-context layer with citations *is* a retrieval product.
+
+**Customer 1: the practice itself (Lorewood Labs).** Run the consultancy on it: engagement decisions, architecture calls, the operating log, every decision recorded with evidence links during real work. This is the gate: if answering "why did we decide X" from the graph does not beat memory and Slack search within two weeks of honest use, stop at M0 and keep it as a free internal tool.
+
+**Customer 2: one design-partner client.** A client with high trust and an existing retainer relationship, brought in only after the experience and technicals are settled at customer 1. Three conditions, none waivable:
+
+1. **Hygiene bar first.** M1 complete: telemetry stripped (the pinned upstream images still phone home to PostHog), TLS, an isolated per-client instance, tested backups. No client touches the stock images.
+2. **IP fenced in writing.** Lorefold is Lorewood Labs product IP, provided as value-add *outside* the engagement SOW. Never allow ambiguity about whether tooling used during a retainer is engagement work product; that ambiguity gets expensive when equity or long relationships are involved. Bound the support expectations explicitly, or the product becomes unpaid-support surface area.
+3. **Data discipline.** Decision context only: roadmap calls, architecture decisions, status. Evidence enters as links into the client's own systems, not as copies. No sensitive data classes (anything involving minors, health, or regulated records) until a real permissions model exists; Lorefold's auth today is one shared password.
+
+**What customer 2 proves, and what it cannot.** A design partner validates the *experience*: does the client actually return to the decision ledger, does the recurring report become a view over it, does it change how meetings go. A design partner does **not** validate price; a friendly with an existing relationship renews for relationship reasons. **Customer 3, at arm's length and separately priced, is the revenue proof.** Whenever access continues past an engagement, it must be a separate line item; bundled access proves nothing.
+
+**The natural wedge for customer 2** is the report the practice already delivers: regenerate the monthly report as a *view over the decision ledger* — what was decided, why, on what evidence, what changed since last month. It makes the product legible to the client instantly and costs nothing extra once decisions are being recorded.
+
+**Connector discipline.** Do not build GitHub/Slack/Drive/docs connectors solo. If the ingestion spike says adopt, stand on an OSS evidence layer and keep Lorefold's defensible core the decision ledger plus the curation practice around it. The pipes are commodity; the ledger and the judgment are not.
+
+**License.** EPL-1.0: hosting for clients is unrestricted (no network copyleft); distributing modified builds requires source availability, which fits keeping it open. Rebrand permitted; Athens provenance retained as a credibility line, not an identity.
+
+**Focus guard.** Client delivery stays priority one; Lorefold is built in the gaps, not instead of billable work. Timeboxes: M0 half a day, M2a one day, decision-layer spec spread across the gate window, M1 two to three days, M1.5 one day, M2b one to two days. The gate is real: fail it and the project stops at a free internal tool.
 
 ---
 
 ## 10. Open questions for the next planning session
 
-1. **Name and brand.** Working name is **Sorbet**. Keep "Athens" lineage visible (credibility, searchability) or commit to the rename now? Renaming is permitted and cheap today, expensive later. One flag on Sorbet: it collides with [Stripe's Ruby type-checker](https://sorbet.org), which is well known among exactly the engineers who are the client audience. Not disqualifying, worth deciding deliberately rather than discovering on a proposal.
-2. **Deployment target for M0.** Home lab / VPS / Tailscale-only? Determines whether TLS (M1's Caddy work) gets pulled earlier.
-3. **M2a-first vs M1-first.** The proposal front-loads the agent demo (M2a before M1) because it requires no builds; flip the order if telemetry stripping or TLS is a prerequisite for any real data entering the graph.
-4. **What data goes in first.** Personal command center only, or seed a real (low-stakes) engagement workspace to test the client-facing story?
-5. **Export before adoption?** Markdown export is missing; decide whether `/api/export` (M2b) should be pulled forward as a prerequisite for putting irreplaceable notes in.
-6. **The hidden feature flags.** Which of tasks/properties/queries/comments/notifications to turn on day one vs leave off until stabilized (they shipped as experiments).
-7. **Success metric for the two-week gate** after M2a: what does "indispensable" mean concretely (daily notes written? agent round-trips per week? one client demo delivered?).
+Resolved since first writing:
+
+1. ~~Name and brand~~ — **Lorefold.** Kin to Lorewood Labs; a fold is where the flock is kept, and the graph state is literally a fold over the append-only operation log (ADR 0018). Web-search collisions are clean (the earlier candidate, Sorbet, collided with Stripe's Ruby type-checker and was dropped). Still to check before anything public: domain, npm scope, GitHub org, USPTO classes 9/42.
+2. ~~M2a-first vs M1-first~~ — M2a first, confirmed by the reframe: the thesis test (decision records in live use) runs entirely on published images. The M1 hygiene bar becomes mandatory at the moment a client instance exists, not before.
+3. ~~What data goes in first~~ — the practice's own engagement decisions (customer 1). A design-partner client comes only after the gate and the M1 hygiene bar (section 9).
+
+Still open:
+
+4. **Deployment target for M0.** Local / VPS / Tailscale-only. Weightier under the reframe: whatever hosts a client workspace must satisfy that client's data expectations, and Lorefold brings no permissions model of its own.
+5. **Evidence store: adopt vs build.** Output of the ingestion spike. Leading candidate shape: an OSS enterprise-search layer as the corpus, Lorefold as the ledger linking into it.
+6. **Minimum auth bar for customer 2.** Is per-client isolation + TLS + strong graph password + Caddy basic-auth enough for decision-context-only data, or does customer 2 wait for real accounts?
+7. **Export before adoption?** `/api/export` (M2b) may deserve promotion; an exit path is part of the trust story a consultancy sells.
+8. **Which hidden feature flags on day one.** Tasks/properties/queries likely on; comments/reactions/notifications likely off until stabilized (all shipped as experiments).
+9. **Pricing shape for continued access** after an engagement ends. Separate line item by rule; amount and packaging decided once customer 2 exists, validated only by customer 3.
+10. **Gate metric, concretely.** Proposed: during two weeks of live use, "why did we decide X" gets answered from the graph with evidence at least weekly, and the weekly review runs out of Lorefold instead of memory. Refine before starting the clock.
 
 ---
 

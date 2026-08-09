@@ -2,9 +2,9 @@
 
 Execution breakdown of the roadmap in `REBOOT.md` section 8. Ground rules for agents are in `AGENTS.md` — read that first.
 
-**Order:** Rename → M0 → M2a → *(decision gate)* → M1 → M1.5 → M2b.
+**Order:** Rename → M0 → M2a → Decision layer v0 → *(decision gate)* → M1 → M1.5 → M2b.
 
-The gate after M2a is deliberate: M0 and M2a together prove the thesis using published Docker images with no compilation. If daily use plus the agent bridge does not feel indispensable within two weeks, stop there and keep it as a free internal tool. M1 onward is only worth paying for if the gate passes.
+The gate is deliberate: M0, M2a, and the decision-layer v0 together prove the thesis using published Docker images with no compilation. The test is not note capture; it is decision intelligence. Two weeks of recording real engagement decisions with evidence links, then the question: does "why did we decide X," answered from the graph, beat memory and Slack search? If not, stop there and keep it as a free internal tool. M1 onward is only worth paying for if the gate passes.
 
 **[HUMAN]** marks tasks needing a person — real infrastructure, secrets, a domain, or two browsers side by side. Everything else is agent-executable.
 
@@ -115,11 +115,40 @@ Vitest over codec, dates, and client. No live server required.
 `claude mcp add` against the running M0 stack. Claude appends to today's daily note; it appears live in an open browser attributed to the bot user; a page reads back as markdown.
 *Depends on LF-7, LF-13.*
 
-**← Decision gate. Two weeks of daily use before starting Epic D.**
+*(The decision gate follows Epic D, once decision records are in live use.)*
 
 ---
 
-## Epic D: M1 — Own the build
+## Epic D: Decision layer v0 (the differentiator; runs on the M0 stack)
+
+What separates Lorefold from a notes tool. Sequenced before the gate because none of it needs compilation.
+
+### LF-35 · [HUMAN] Architecture decision: where evidence lives · 3
+The decision-intelligence reframe makes three known weaknesses product-critical: every client receives the whole graph on connect, there is no permissions model, and search is an in-browser scan. Agent drafts the spike document; the owner makes the call. Recommended default: evidence does **not** live in the graph — the graph holds decision objects plus links (source-system URLs at first, an evidence store later).
+
+*Acceptance:* written decision in `doc/` covering evidence placement, the per-client isolation boundary, and the minimum auth bar before any client data is referenced.
+
+### LF-36 · Spike: ingestion adopt vs build · 3
+Continuous ingestion of GitHub/Slack/Drive/docs means auth, pagination, rate limits, incremental sync, and permission mapping, times four. Evaluate adopting an OSS enterprise-search layer (Onyx/Danswer and peers) as the evidence store, with Lorefold owning only the decision ledger. Criteria: connector coverage, self-hostability, per-client isolation, license compatibility, citation/permalink support, maintenance burden.
+
+*Acceptance:* written adopt-or-build recommendation in `doc/`. No code.
+
+### LF-37 · Spec the decision object model · 3
+`:entity/type "[[lorefold/decision]]"` plus properties: status (proposed / accepted / superseded / reversed), date, question, rationale, alternatives considered, participants, evidence links, supersedes / superseded-by. Rides the existing `:block/property-of` + `:block/key` model with zero schema migration; the append-only log already records each decision's evolution. Include worked internal-representation examples and the datalog for "why did we decide X" and "what decisions touch Y". Follow the `[[athens/task]]` string convention.
+
+*Acceptance:* spec committed to `doc/`; examples validate against `internal-representation->atomic-ops` in a REPL or test.
+
+### LF-38 · Implement `lorefold_decision_record` MCP tool · 2
+Creates a decision object via `/api/path/write` per the LF-37 spec, evidence as URLs (Slack permalinks, PR links). Zero connectors, zero new infrastructure; ingestion is an optimization on capture, not the thesis. Include a `lorefold_decisions` read tool listing decisions by status/date via path reads (server-side query endpoints arrive in Epic G).
+*Depends on LF-13, LF-37.*
+
+*Acceptance:* a decision recorded end-to-end from Claude, visible in the UI with properties and evidence links.
+
+**← Decision gate. Two weeks of live decision-recording on a real engagement before starting Epic E.**
+
+---
+
+## Epic E: M1 — Own the build
 
 ### LF-16 · Strip the PostHog snippet · 1
 `resources/public/index.html` ships a live analytics key that phones home on every load. Remove it. Sentry needs no action (its DSN goog-define defaults to empty in source builds).
@@ -171,7 +200,7 @@ Fresh clone on a machine with only Docker → `up --build` → view-source shows
 
 ---
 
-## Epic E: M1.5 — Replace Fluree with SQLite
+## Epic F: M1.5 — Replace Fluree with SQLite
 
 Kills a container, kills the scariest build dependency, and reduces backup to copying one file.
 
@@ -202,7 +231,7 @@ Export from the running Fluree stack, import to SQLite, verify page counts and s
 
 ---
 
-## Epic F: M2b — Full agent toolset
+## Epic G: M2b — Full agent toolset
 
 ### LF-29 · Add read endpoints to `api.clj` · 5
 `/api/pages` (`get-all-pages`), `/api/search` (linear scan plus `breadcrumb-string` and owning page), `/api/backlinks` (`get-linked-refs-by-page-title`). Same feature flag, same Basic auth, each 10-25 lines reusing verified `common_db` helpers.

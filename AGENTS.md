@@ -4,11 +4,11 @@ Read this before touching anything. It encodes decisions that are already made a
 
 ## What this is
 
-Lorefold is a reboot of [Athens](https://github.com/athensresearch/athens) (YC W21, archived December 2022): a self-hosted, collaborative, event-sourced knowledge graph. ClojureScript + re-frame + DataScript frontend, Clojure JVM server, shared `.cljc` protocol layer.
+Lorefold is a **decision intelligence platform** built on a reboot of [Athens](https://github.com/athensresearch/athens) (YC W21, archived December 2022): a self-hosted, collaborative, event-sourced knowledge graph. ClojureScript + re-frame + DataScript frontend, Clojure JVM server, shared `.cljc` protocol layer.
 
-The reboot's thesis: the graph is an unusually good substrate for AI agents, because it is uid-addressed, datalog-queryable, and mutated through a small validated operation vocabulary. The differentiator is the MCP bridge, not the note-taking.
+The product thesis: organizations lose the *why* behind their decisions. Lorefold records **decisions as first-class typed objects linked to their evidence**, on a graph that is uid-addressed, datalog-queryable, and mutated through a small validated operation vocabulary — which also makes it unusually legible to AI agents. The differentiators are the decision ledger and the MCP bridge; note capture is a surface, not the category.
 
-Working name is **Lorefold**. The upstream project is Athens; keep that provenance in prose, not in code churn.
+The name is **Lorefold** (decided). The upstream project is Athens; keep that provenance in prose, not in code churn.
 
 ## Guardrails
 
