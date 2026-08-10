@@ -89,6 +89,92 @@ export function dailyNoteUid(date: Date, timeZone: string): string {
   return `${month}-${day}-${year}`;
 }
 
+/* ------------------------------------------------------------------ *
+ * ISO dates (LF-38).
+ *
+ * `:decision/date` is a `YYYY-MM-DD` string, and a decision is filed on the
+ * daily note *of that date*, which is often not today — decisions get written
+ * down after they are made. So the bridge needs to go from an ISO date to a
+ * daily-note title, which `@today` cannot do.
+ *
+ * A calendar date has no timezone. These helpers therefore treat an ISO date as
+ * UTC midnight and format it in UTC, which makes the mapping total and
+ * reversible. `LOREFOLD_TZ` is used only to decide what "today" is, never to
+ * shift a date the caller stated explicitly.
+ * ------------------------------------------------------------------ */
+
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** True for a real `YYYY-MM-DD` calendar date. Rejects "2026-02-30". */
+export function isIsoDate(value: string): boolean {
+  return parseIsoDate(value) !== null;
+}
+
+/** UTC midnight for an ISO date, or `null` if it is not one. */
+export function parseIsoDate(value: string): Date | null {
+  const match = ISO_DATE.exec(value.trim());
+  if (match === null) return null;
+
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const date = new Date(Date.UTC(year, month - 1, day));
+  // Round-trip check: Date.UTC happily rolls 2026-02-30 over into March.
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+/** `YYYY-MM-DD` for `date` as seen from `timeZone`. */
+export function isoDateIn(date: Date, timeZone: string): string {
+  const { year, month, day } = partsIn(date, timeZone, NUMERIC);
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * The daily-note title for an ISO date — "2026-08-09" to "August 09, 2026".
+ *
+ * Safe to write to by title: the server's `:page/new` resolver derives a page's
+ * uid from a date-shaped title (`resolver/atomic.cljc:151`), so a page created
+ * this way gets the canonical daily uid `08-09-2026` and is the same page the
+ * calendar view shows — provided the title format is exactly right, which is
+ * why this goes through `dailyNoteTitle` rather than assembling a string.
+ */
+export function dailyNoteTitleForIso(iso: string): string {
+  const date = parseIsoDate(iso);
+  if (date === null) {
+    throw new RangeError(`Not a YYYY-MM-DD date: ${JSON.stringify(iso)}`);
+  }
+  return dailyNoteTitle(date, 'UTC');
+}
+
+/** Every ISO date from `from` to `to`, inclusive. Empty if `to` precedes `from`. */
+export function isoDateRange(from: string, to: string): string[] {
+  const start = parseIsoDate(from);
+  const end = parseIsoDate(to);
+  if (start === null || end === null) {
+    throw new RangeError(`Not a YYYY-MM-DD range: ${JSON.stringify(from)}..${JSON.stringify(to)}`);
+  }
+
+  const dates: string[] = [];
+  for (let d = start.getTime(); d <= end.getTime(); d += 86_400_000) {
+    dates.push(isoDateIn(new Date(d), 'UTC'));
+  }
+  return dates;
+}
+
+/** The ISO date `days` before `iso`. */
+export function isoDaysBefore(iso: string, days: number): string {
+  const date = parseIsoDate(iso);
+  if (date === null) {
+    throw new RangeError(`Not a YYYY-MM-DD date: ${JSON.stringify(iso)}`);
+  }
+  return isoDateIn(new Date(date.getTime() - days * 86_400_000), 'UTC');
+}
+
 /**
  * Compares a title the server returned against the one this bridge expected.
  *

@@ -5,12 +5,12 @@ graph. It is a thin bridge over the REST API the Lorefold server already
 exposes — it adds no endpoints, needs nothing compiled, and touches no
 ClojureScript.
 
-Milestone M2a, tasks LF-9 through LF-14. Verified against the M0 stack on
-2026-08-10.
+Milestone M2a (LF-9 to LF-14) plus the decision tools (LF-38). Verified against
+the M0 stack on 2026-08-10.
 
 ## What it can and cannot do
 
-Four tools:
+Six tools. The first four are graph plumbing; the last two are the point.
 
 | Tool | What it does |
 |---|---|
@@ -18,6 +18,8 @@ Four tools:
 | `lorefold_page_read` | Reads a page or block by exact title, by block uid, or as today's note. Returns a markdown outline *and* the raw internal representation, which carries the block uids. |
 | `lorefold_page_write` | Appends blocks at any path, creating the page and any intermediate blocks that are missing. |
 | `lorefold_page_create` | Creates a new page, optionally with starting content. Refuses to write over an existing one. |
+| `lorefold_decision_record` | Records a decision as a typed object — statement, status, date, context, rationale, alternatives, evidence, participants, supersedes. |
+| `lorefold_decisions` | Reads decisions back over a range of days, with an effective status that accounts for supersession. |
 
 **Everything here appends.** Nothing edits or deletes. This is not a design
 choice of the bridge: `POST /api/path/write` is the only write endpoint the
@@ -26,6 +28,56 @@ edit. In-place editing needs a server endpoint that does not exist yet (LF-30).
 
 There is also **no search, no backlinks and no page listing**, so a page title
 has to be exact. Those are M2b (LF-29 to LF-31).
+
+## Decisions
+
+`doc/decision-object-model.md` is the specification; this is what the two tools
+do with it.
+
+A decision is a **block**, filed on the daily note for the day it was *made* —
+which is usually not today, because decisions get written down after the fact.
+Its own text is the statement; everything else rides as property blocks. It
+needs four things: the statement, a status (`proposed` / `accepted` /
+`superseded` / `reversed`), a date, and at least one context page. Everything
+else — question, rationale, alternatives, evidence, participants, supersedes,
+review date — is optional and worth supplying.
+
+Nothing maintains an index. Because the marker property is the page link
+`[[lorefold/decision]]`, that page accrues every decision in the graph as a
+linked reference for free, and so does every client, project and person page a
+decision names.
+
+### Three consequences of append-only that you will meet immediately
+
+**A decision cannot be edited after recording.** Get it right the first time;
+there is no delete either. `lorefold_decision_record` validates everything it
+can locally and checks that each `supersedes` uid exists *and* is a decision
+before it writes anything, because a bad write is permanent.
+
+**Status transitions do not exist.** A decision is recorded at whatever status
+it holds when captured — in practice `accepted`. To replace one, record a *new*
+decision with `supersedes` pointing at the old block's uid. That is what an
+append-only ledger implies anyway, and the old decision stays as history.
+
+**So a stored status goes stale, and the read tool repairs it.**
+`lorefold_decisions` reports an *effective* status: if anything it scanned
+supersedes a decision, that decision is reported as `superseded` and its
+successor is named, whatever its own status block still says. Editing the old
+block instead would need `/api/block/save`, which is LF-30.
+
+### `lorefold_decisions` is a windowed scan, not a query
+
+There are no server-side query endpoints. The only read primitive is
+`/api/path/read`, so the tool reads the daily note for each day in a range and
+collects what it finds — 14 days by default, capped at 92, one HTTP round trip
+per day.
+
+**An empty result means "none in these days", never "none in the graph."** The
+tool says so in its own description and in every response, because a decision
+ledger that quietly under-reports is worse than one that says it cannot see.
+Supersession detection has the same limit: a successor recorded outside the
+window is invisible, and the decision it replaced will be reported at its stored
+status. Graph-wide search, backlinks and page listing are M2b (LF-29).
 
 ## Setup
 
@@ -145,8 +197,10 @@ npm run build      # tsc -> dist/
 | `src/config.ts` | Environment parsing, with errors that name the variable to fix. |
 | `src/client.ts` | The two REST endpoints, HTTP Basic auth, and **the only place that knows the server's JSON key spellings** (`page/title`, `block/open?`). |
 | `src/codec.ts` | Markdown outline ↔ internal representation. |
-| `src/dates.ts` | Daily-note titles and uids. |
-| `src/tools.ts` | The four tools, their schemas and their error messages. |
+| `src/edn.ts` | A minimal EDN *writer*. Exists solely because properties cannot be written as JSON — see below. |
+| `src/dates.ts` | Daily-note titles and uids, and ISO-date helpers for filing a decision on the day it was made. |
+| `src/decisions.ts` | The decision object model: payload builder, extraction, effective status. |
+| `src/tools.ts` | The six tools, their schemas and their error messages. |
 | `src/index.ts` | stdio entrypoint. |
 
 ### Server behaviour worth knowing before you extend this
@@ -167,6 +221,21 @@ from the source:
   arrives as a string and fails malli validation with `500 Invalid event`. It is
   deliberately not exposed, so every write appends last. Use EDN content
   negotiation if you ever need it.
+- **`block/properties` cannot be written over JSON at all**, which is why
+  `edn.ts` exists. muuntaja keywordizes JSON object keys, but the server uses a
+  property key as a *page title string* when it positions the property block
+  (`bfs/enhance-props`). The resulting event fails validation, and then malli's
+  own error formatter throws while describing the failure — so the client gets
+  `500 class clojure.lang.Keyword cannot be cast to class java.lang.Number`,
+  naming neither the field nor the cause. `writePath` therefore switches the
+  request body to EDN whenever the data carries properties. Only the request
+  changes; the response is still negotiated as JSON, so there is an EDN writer
+  here and deliberately no reader. Filed as LF-29b (3).
+- **Past daily notes are reachable by title.** There is no `@yesterday`, but
+  writing to `{page/title: "August 09, 2026"}` lands on the existing page rather
+  than duplicating it, because `:page/new` derives a date-shaped title back to
+  the canonical `MM-dd-yyyy` uid. This is how backdated decisions are filed, and
+  it depends entirely on the title format being exact.
 - The path grammar is closed: roots `{page/title}`, `{block/uid}`,
   `{page/query: "@today"}` — only that literal query string — and selectors
   `{block/string}`, `{block/key}`. Anything else is a 500. Do not guess at

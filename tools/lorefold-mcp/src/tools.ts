@@ -1,12 +1,14 @@
 /**
- * The v0 tool surface (LF-13).
+ * The tool surface (LF-13, extended by LF-38).
  *
- * Four tools, all built on the two path endpoints that already exist:
+ * Six tools, all built on the two path endpoints that already exist:
  *
- *   lorefold_daily_append  append to today's daily note
- *   lorefold_page_read     read a page or block as IR + markdown
- *   lorefold_page_write    append at an arbitrary path, creating it if missing
- *   lorefold_page_create   create a new page
+ *   lorefold_daily_append    append to today's daily note
+ *   lorefold_page_read       read a page or block as IR + markdown
+ *   lorefold_page_write      append at an arbitrary path, creating it if missing
+ *   lorefold_page_create     create a new page
+ *   lorefold_decision_record record a decision as a typed object     (LF-38)
+ *   lorefold_decisions       read decisions back over a date window  (LF-38)
  *
  * Search, backlinks, page listing and in-place block editing are absent on
  * purpose — they need server work that belongs to M2b (LF-29 to LF-31). Every
@@ -39,7 +41,27 @@ import {
   pageCreatingStrings,
   titleOf,
 } from './codec.js';
-import { dailyNoteTitle, timeZoneMismatchWarning } from './dates.js';
+import {
+  dailyNoteTitle,
+  dailyNoteTitleForIso,
+  isoDateIn,
+  isoDateRange,
+  isoDaysBefore,
+  isIsoDate,
+  timeZoneMismatchWarning,
+} from './dates.js';
+import {
+  buildDecisionBlock,
+  DecisionInputError,
+  effectiveStatuses,
+  extractDecisions,
+  isDecisionBlock,
+  STATUSES,
+  supersededUids,
+  type DecisionInput,
+  type DecisionView,
+  type ReadDecision,
+} from './decisions.js';
 
 /* ------------------------------------------------------------------ *
  * Shared schema fragments.
@@ -108,7 +130,7 @@ function failure(message: string): CallToolResult {
  * labelled as such rather than dressed up.
  */
 function errorResult(error: unknown): CallToolResult {
-  if (error instanceof LorefoldError) {
+  if (error instanceof LorefoldError || error instanceof DecisionInputError) {
     return failure(error.message);
   }
   const message = error instanceof Error ? error.message : String(error);
@@ -476,4 +498,389 @@ export function registerTools(
       }
     },
   );
+
+  /* -------------------------------------------------------------- *
+   * lorefold_decision_record (LF-38)
+   * -------------------------------------------------------------- */
+
+  server.registerTool(
+    'lorefold_decision_record',
+    {
+      title: 'Record a decision',
+      description:
+        'Record an organizational decision as a first-class typed object in the ' +
+        'Lorefold graph: the statement, plus why it was made, what else was ' +
+        'considered, and the evidence behind it. This is what Lorefold is for — ' +
+        'use it whenever a real choice gets made, not for notes or tasks.\n\n' +
+        'The decision is filed as a block on the daily note for `date`, which is ' +
+        'the date the decision was **made** — often earlier than today, because ' +
+        'decisions get written down after the fact. It becomes visible on every ' +
+        'page it links to (its context, its participants) and on the ' +
+        'lorefold/decision page, which indexes every decision automatically.\n\n' +
+        'Statuses are proposed, accepted, superseded and reversed. In practice a ' +
+        'decision is recorded as `accepted`, because it is captured after being ' +
+        'made. A rejected option is NOT a decision — put it in `alternatives`, ' +
+        'stating why it lost.\n\n' +
+        'Appends only. Once recorded, a decision cannot be edited or deleted ' +
+        'through this API, so get it right the first time. To replace a decision, ' +
+        'record a NEW one with `supersedes` set to the old block uid — the ledger ' +
+        'is append-only by design, and the old decision stays as history.',
+      inputSchema: {
+        statement: z
+          .string()
+          .min(1)
+          .describe(
+            'The decision itself, in plain declarative language: "We will replace ' +
+              'Fluree with SQLite for the event log." This is the object\'s title; ' +
+              'there is no separate title field.',
+          ),
+        status: z
+          .enum(STATUSES)
+          .describe(
+            'proposed = under consideration; accepted = in force (the normal case); ' +
+              'superseded = replaced by a later decision; reversed = undone with no ' +
+              'replacement.',
+          ),
+        date: z
+          .string()
+          .describe('YYYY-MM-DD, the date the decision was MADE. Backdating is normal.'),
+        context: z
+          .array(z.string().min(1))
+          .min(1)
+          .describe(
+            'Page names this decision belongs to — the client, the project, the ' +
+              'system. Required: it is what makes a client page a decision log. ' +
+              'Plain names, e.g. ["Acme Corp", "Billing migration"]; the brackets ' +
+              'are added for you. Pages are created if they do not exist.',
+          ),
+        question: z
+          .string()
+          .optional()
+          .describe('What was actually being decided. Omit when the statement says it.'),
+        rationale: z
+          .string()
+          .optional()
+          .describe(
+            'Why this choice, in prose. The highest-value field in the whole model — ' +
+              'a decision without it is a fact, not a decision.',
+          ),
+        alternatives: z
+          .array(z.string().min(1))
+          .optional()
+          .describe('One entry per option considered, each stating why it lost.'),
+        evidence: z
+          .array(z.string().min(1))
+          .optional()
+          .describe(
+            'One entry per URL or ((block-uid)). Link to where the thing lives — a ' +
+              'Slack permalink, a PR, a doc, a CI run — never a copy of it.',
+          ),
+        participants: z
+          .array(z.string().min(1))
+          .optional()
+          .describe(
+            'Names of the people who made the decision. Each becomes a page, so ' +
+              'their page answers "every decision this person was part of".',
+          ),
+        supersedes: z
+          .array(z.string().min(1))
+          .optional()
+          .describe(
+            'Block uids of decisions this one replaces. Points backwards only; the ' +
+              'forward direction is derived. Each uid is checked to exist before ' +
+              'anything is written.',
+          ),
+        review_on: z
+          .string()
+          .optional()
+          .describe('YYYY-MM-DD. For decisions taken under uncertainty that deserve revisiting.'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async (args): Promise<CallToolResult> => {
+      try {
+        const input: DecisionInput = {
+          statement: args.statement,
+          status: args.status,
+          date: args.date,
+          context: args.context,
+          ...(args.question !== undefined ? { question: args.question } : {}),
+          ...(args.rationale !== undefined ? { rationale: args.rationale } : {}),
+          ...(args.alternatives !== undefined ? { alternatives: args.alternatives } : {}),
+          ...(args.evidence !== undefined ? { evidence: args.evidence } : {}),
+          ...(args.participants !== undefined ? { participants: args.participants } : {}),
+          ...(args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
+          ...(args.review_on !== undefined ? { reviewOn: args.review_on } : {}),
+        };
+
+        const block = buildDecisionBlock(input);
+
+        // Check every superseded uid before writing anything. A dangling
+        // ((uid)) is not an error to the server — it is stored as literal text
+        // and produces no reference at all, so the link would silently not
+        // exist. There is no delete, so the bad write would be permanent.
+        const claimed = supersededUids(block);
+        for (const uid of claimed) {
+          const target = await client.readPath([{ blockUid: uid }]);
+          if (target === null) {
+            return failure(
+              `No block with uid "${uid}" exists, so supersedes would produce a ` +
+                'dangling reference that is stored as plain text rather than a real ' +
+                'link. Nothing was written. Find the decision first with ' +
+                'lorefold_decisions and use the uid it reports.',
+            );
+          }
+          if (!isDecisionBlock(target as IRBlock)) {
+            return failure(
+              `Block "${uid}" exists but is not a decision — supersedes must point at ` +
+                'another decision block. Nothing was written.',
+            );
+          }
+        }
+
+        // A decision goes on the daily note of the day it was made. When that is
+        // today we let the server resolve "@today" from its own clock, which is
+        // authoritative; when it is backdated there is no query for it, so we
+        // address the page by title. That is safe because the server derives a
+        // date-shaped title's page uid back to the canonical daily uid.
+        const todayIso = isoDateIn(now(), config.timeZone);
+        const backdated = input.date.trim() !== todayIso;
+        const path: Path = backdated
+          ? [{ pageTitle: dailyNoteTitleForIso(input.date) }]
+          : [{ pageQuery: '@today' }];
+
+        const written = await client.writePath(path, [block]);
+
+        const landedOn = titleOf(written);
+        const warning = backdated
+          ? null
+          : timeZoneMismatchWarning(landedOn, dailyNoteTitle(now(), config.timeZone), config.timeZone);
+
+        // The write returns the whole page; the decision just added is the last
+        // one whose statement matches.
+        const recorded = extractDecisions(written, landedOn ?? '(unknown page)')
+          .filter((decision) => decision.statement === block.string)
+          .pop();
+
+        const uidLine =
+          recorded?.uid !== undefined
+            ? `Its block uid is ${recorded.uid} — use that uid in \`supersedes\` if this ` +
+              'decision is later replaced.'
+            : 'The server did not return a uid for it; read the page back to find it.';
+
+        const links = [
+          ...(input.context ?? []),
+          ...(input.participants ?? []),
+        ];
+        const linkLine =
+          links.length > 0
+            ? `Linked to ${links.length} page(s): ${links.join(', ')} — any that did not ` +
+              'exist have been created, and each now lists this decision as a backlink.'
+            : '';
+
+        const summary =
+          `Recorded a ${input.status} decision on ${describeNode(written)} ` +
+          `(dated ${input.date}${backdated ? ', backdated' : ''}), ` +
+          `attributed to "${client.username}".`;
+
+        return textResult([
+          summary,
+          warning ?? '',
+          uidLine,
+          linkLine,
+          'It is indexed automatically on the page lorefold/decision, which accrues ' +
+            'every decision in the graph as a linked reference.',
+          irResult(recorded ?? null),
+        ]);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+
+  /* -------------------------------------------------------------- *
+   * lorefold_decisions (LF-38)
+   * -------------------------------------------------------------- */
+
+  server.registerTool(
+    'lorefold_decisions',
+    {
+      title: 'List recorded decisions',
+      description:
+        'List decisions recorded in the Lorefold graph over a range of days, with ' +
+        'their status, context, rationale, alternatives and evidence.\n\n' +
+        'IMPORTANT — this is a WINDOWED SCAN, not a graph-wide query. It reads the ' +
+        'daily note for each day in the range and collects the decisions filed ' +
+        'there. Decisions outside the range are invisible to it, so an empty ' +
+        'result means "none in these days", never "none in the graph". There are ' +
+        'no server-side query endpoints yet; graph-wide search, backlinks and page ' +
+        'listing arrive in M2b. Widen `from` and `to` before concluding anything.\n\n' +
+        'Defaults to the last 14 days. A decision is filed on the daily note for ' +
+        'the date it was MADE, so a decision backdated outside the window will not ' +
+        'appear even if it was recorded today.\n\n' +
+        'Status is reported as an EFFECTIVE status: because the API cannot edit an ' +
+        'existing block, a decision that has been replaced still stores its ' +
+        'original status. If any decision in the scanned window supersedes ' +
+        'another, that other one is reported as superseded and its successor is ' +
+        'named — but only for successors that fall inside the window.',
+      inputSchema: {
+        from: z
+          .string()
+          .optional()
+          .describe('YYYY-MM-DD, first day to scan. Defaults to 13 days before `to`.'),
+        to: z
+          .string()
+          .optional()
+          .describe('YYYY-MM-DD, last day to scan, inclusive. Defaults to today.'),
+        status: z
+          .enum(STATUSES)
+          .optional()
+          .describe('Keep only decisions with this effective status. Applied after scanning.'),
+        context: z
+          .string()
+          .optional()
+          .describe(
+            'Keep only decisions whose context mentions this page name, matched ' +
+              'case-insensitively. Applied after scanning.',
+          ),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ from, to, status, context }): Promise<CallToolResult> => {
+      try {
+        const today = isoDateIn(now(), config.timeZone);
+
+        const last = (to ?? today).trim();
+        if (!isIsoDate(last)) {
+          return failure(`\`to\` must be a real calendar date in YYYY-MM-DD form, not ${JSON.stringify(to)}.`);
+        }
+        const first = (from ?? isoDaysBefore(last, DEFAULT_WINDOW_DAYS - 1)).trim();
+        if (!isIsoDate(first)) {
+          return failure(`\`from\` must be a real calendar date in YYYY-MM-DD form, not ${JSON.stringify(from)}.`);
+        }
+
+        const days = isoDateRange(first, last);
+        if (days.length === 0) {
+          return failure(
+            `The range is empty: \`from\` (${first}) is after \`to\` (${last}). ` +
+              'Both dates are inclusive.',
+          );
+        }
+        if (days.length > MAX_WINDOW_DAYS) {
+          return failure(
+            `That range is ${days.length} days, and this tool reads one page per day, ` +
+              `so it is capped at ${MAX_WINDOW_DAYS}. Narrow the range and scan in ` +
+              'passes. A single query over the whole graph needs the endpoints in M2b.',
+          );
+        }
+
+        const found: ReadDecision[] = [];
+        let daysWithNotes = 0;
+        for (const day of days) {
+          const title = dailyNoteTitleForIso(day);
+          const page = await client.readPath([{ pageTitle: title }]);
+          if (page === null) continue;
+          daysWithNotes += 1;
+          found.push(...extractDecisions(page, title));
+        }
+
+        const all = effectiveStatuses(found);
+        const matching = all.filter((decision) => {
+          if (status !== undefined && decision.effectiveStatus !== status) return false;
+          if (context !== undefined) {
+            const haystack = (decision.context ?? '').toLowerCase();
+            if (!haystack.includes(context.trim().toLowerCase())) return false;
+          }
+          return true;
+        });
+
+        const filters = [
+          status !== undefined ? `status ${status}` : null,
+          context !== undefined ? `context mentioning "${context}"` : null,
+        ].filter((part): part is string => part !== null);
+
+        const scanNote =
+          `Scanned ${days.length} daily note(s) from ${first} to ${last} in ` +
+          `${config.timeZone}; ${daysWithNotes} existed. Found ${all.length} decision(s)` +
+          (filters.length > 0 ? `, ${matching.length} matching ${filters.join(' and ')}` : '') +
+          '.';
+
+        const caveat =
+          'This is a windowed scan of daily notes, not a graph-wide query, and ' +
+          'supersession is only detected among the decisions listed here. Decisions ' +
+          'outside this range are not reported. Graph-wide search is M2b.';
+
+        if (matching.length === 0) {
+          return textResult([
+            scanNote,
+            all.length > 0
+              ? 'No decision in the window matched the filters. Drop them to see the rest.'
+              : 'No decisions were found in this window. Widen `from` and `to` before ' +
+                'concluding that none exist — this tool cannot see past the range it scanned.',
+            caveat,
+          ]);
+        }
+
+        return textResult([
+          scanNote,
+          renderDecisions(matching),
+          caveat,
+          `Structured (JSON):\n${JSON.stringify(matching, null, 2)}`,
+        ]);
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
+}
+
+/** Days scanned when the caller gives no range. */
+const DEFAULT_WINDOW_DAYS = 14;
+
+/**
+ * Hard cap on the scan. One HTTP round trip per day is the only read primitive
+ * available, so an unbounded range would be a slow way to fail.
+ */
+const MAX_WINDOW_DAYS = 92;
+
+function renderDecisions(decisions: DecisionView[]): string {
+  return decisions
+    .map((decision) => {
+      const lines: string[] = [];
+      const stale =
+        decision.effectiveStatus !== decision.storedStatus
+          ? ` (stored as "${decision.storedStatus}")`
+          : '';
+      lines.push(`## ${decision.statement}`);
+      lines.push(
+        `- status: ${decision.effectiveStatus}${stale}` +
+          (decision.uid !== undefined ? ` · uid: ${decision.uid}` : ''),
+      );
+      if (decision.date !== undefined) lines.push(`- decided: ${decision.date}`);
+      lines.push(`- filed on: ${decision.foundOn}`);
+      if (decision.context !== undefined) lines.push(`- context: ${decision.context}`);
+      if (decision.participants !== undefined) {
+        lines.push(`- participants: ${decision.participants}`);
+      }
+      if (decision.question !== undefined) lines.push(`- question: ${decision.question}`);
+      if (decision.rationale !== undefined) lines.push(`- rationale: ${decision.rationale}`);
+      if (decision.reviewOn !== undefined) lines.push(`- review on: ${decision.reviewOn}`);
+      for (const alternative of decision.alternatives) {
+        lines.push(`- alternative: ${alternative}`);
+      }
+      for (const evidence of decision.evidence) {
+        lines.push(`- evidence: ${evidence}`);
+      }
+      for (const uid of decision.supersedes) {
+        lines.push(`- supersedes: ((${uid}))`);
+      }
+      for (const successor of decision.supersededBy) {
+        lines.push(
+          `- superseded by: ${successor.statement}` +
+            (successor.uid !== undefined ? ` (${successor.uid})` : ''),
+        );
+      }
+      return lines.join('\n');
+    })
+    .join('\n\n');
 }

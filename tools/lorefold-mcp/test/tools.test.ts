@@ -66,9 +66,11 @@ beforeEach(() => {
  * ------------------------------------------------------------------ */
 
 describe('registration', () => {
-  it('registers exactly the four v0 tools', () => {
+  it('registers exactly the six tools', () => {
     expect([...harness.tools.keys()].sort()).toEqual([
       'lorefold_daily_append',
+      'lorefold_decision_record',
+      'lorefold_decisions',
       'lorefold_page_create',
       'lorefold_page_read',
       'lorefold_page_write',
@@ -349,5 +351,322 @@ describe('lorefold_page_create', () => {
     expect(text).toContain('already exists (1 block(s))');
     expect(text).toContain('lorefold_page_write');
     expect(harness.client.writePath).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * lorefold_decision_record (LF-38)
+ * ------------------------------------------------------------------ */
+
+const DECISION_TYPE = '[[lorefold/decision]]';
+
+/** A decision block as the server hands it back, with server-assigned uids. */
+function storedDecision(
+  uid: string,
+  statement: string,
+  props: Record<string, { string?: string; children?: { string: string }[] }> = {},
+) {
+  return {
+    uid,
+    string: statement,
+    properties: {
+      ':entity/type': { uid: `${uid}t`, string: DECISION_TYPE },
+      ':decision/status': { uid: `${uid}s`, string: 'accepted' },
+      ...props,
+    },
+  };
+}
+
+const validDecision = {
+  statement: 'We will replace Fluree with SQLite',
+  status: 'accepted',
+  date: '2026-08-10',
+  context: ['Lorefold'],
+};
+
+describe('lorefold_decision_record', () => {
+  it('writes to @today when the decision was made today, and reports the new uid', async () => {
+    harness.client.writePath.mockResolvedValue({
+      title: TODAY_TITLE,
+      children: [storedDecision('dec111111', validDecision.statement)],
+    } as never);
+
+    const result = await harness.call('lorefold_decision_record', validDecision);
+
+    expect(result.isError).toBeFalsy();
+    const [path, data] = harness.client.writePath.mock.calls[0] as unknown as [unknown, unknown[]];
+    expect(path).toEqual([{ pageQuery: '@today' }]);
+    expect(data[0]).toMatchObject({
+      string: validDecision.statement,
+      properties: {
+        ':entity/type': { string: DECISION_TYPE },
+        ':decision/status': { string: 'accepted' },
+        ':decision/date': { string: '2026-08-10' },
+        ':decision/context': { string: '[[Lorefold]]' },
+      },
+    });
+
+    const text = textOf(result);
+    expect(text).toContain('Recorded a accepted decision');
+    expect(text).toContain('dec111111');
+    expect(text).toContain('lorefold/decision');
+  });
+
+  it('addresses the daily note by title when the decision is backdated', async () => {
+    harness.client.writePath.mockResolvedValue({
+      title: 'August 09, 2026',
+      children: [storedDecision('dec222222', 'Old choice')],
+    } as never);
+
+    await harness.call('lorefold_decision_record', {
+      ...validDecision,
+      statement: 'Old choice',
+      date: '2026-08-09',
+    });
+
+    // There is no @yesterday; a title is the only way to reach a past day, and
+    // the zero-padded format is what keeps it from creating a duplicate page.
+    expect(harness.client.writePath.mock.calls[0]![0]).toEqual([{ pageTitle: 'August 09, 2026' }]);
+  });
+
+  it('says the write was backdated', async () => {
+    harness.client.writePath.mockResolvedValue({
+      title: 'August 09, 2026',
+      children: [storedDecision('d1', 'Old choice')],
+    } as never);
+    const text = textOf(
+      await harness.call('lorefold_decision_record', {
+        ...validDecision,
+        statement: 'Old choice',
+        date: '2026-08-09',
+      }),
+    );
+    expect(text).toContain('backdated');
+  });
+
+  it('checks every supersedes uid exists and is a decision, before writing', async () => {
+    harness.client.readPath.mockResolvedValue(null);
+
+    const result = await harness.call('lorefold_decision_record', {
+      ...validDecision,
+      supersedes: ['nope12345'],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('No block with uid "nope12345" exists');
+    expect(textOf(result)).toContain('Nothing was written');
+    expect(harness.client.writePath).not.toHaveBeenCalled();
+  });
+
+  it('refuses to supersede a block that is not a decision', async () => {
+    harness.client.readPath.mockResolvedValue({ uid: 'plain1234', string: 'just a note' } as never);
+
+    const result = await harness.call('lorefold_decision_record', {
+      ...validDecision,
+      supersedes: ['plain1234'],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('is not a decision');
+    expect(harness.client.writePath).not.toHaveBeenCalled();
+  });
+
+  it('writes supersedes as a block ref once the target checks out', async () => {
+    harness.client.readPath.mockResolvedValue(storedDecision('old111111', 'Older') as never);
+    harness.client.writePath.mockResolvedValue({
+      title: TODAY_TITLE,
+      children: [storedDecision('new111111', validDecision.statement)],
+    } as never);
+
+    await harness.call('lorefold_decision_record', {
+      ...validDecision,
+      supersedes: ['old111111'],
+    });
+
+    const data = harness.client.writePath.mock.calls[0]![1] as unknown as {
+      properties: Record<string, { string: string }>;
+    }[];
+    expect(data[0]!.properties[':decision/supersedes']).toEqual({ string: '((old111111))' });
+  });
+
+  it('rejects a bad status, date or missing context without touching the server', async () => {
+    for (const bad of [
+      { ...validDecision, status: 'pending' },
+      { ...validDecision, date: '10-08-2026' },
+      { ...validDecision, context: [] },
+    ]) {
+      const result = await harness.call('lorefold_decision_record', bad);
+      expect(result.isError, JSON.stringify(bad)).toBe(true);
+    }
+    expect(harness.client.writePath).not.toHaveBeenCalled();
+  });
+
+  it('shouts on a timezone mismatch for a same-day write', async () => {
+    harness.client.writePath.mockResolvedValue({ title: 'August 11, 2026', children: [] } as never);
+    const text = textOf(await harness.call('lorefold_decision_record', validDecision));
+    expect(text).toContain('TIMEZONE MISMATCH');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * lorefold_decisions (LF-38)
+ * ------------------------------------------------------------------ */
+
+describe('lorefold_decisions', () => {
+  /** Answers a page read per daily-note title, null for every other day. */
+  function pagesByTitle(pages: Record<string, unknown>) {
+    harness.client.readPath.mockImplementation((async (path: [{ pageTitle?: string }]) => {
+      const title = path[0]?.pageTitle ?? '';
+      return (pages[title] as never) ?? null;
+    }) as never);
+  }
+
+  it('scans the last 14 days by default and says so', async () => {
+    pagesByTitle({});
+    const text = textOf(await harness.call('lorefold_decisions', {}));
+
+    expect(harness.client.readPath).toHaveBeenCalledTimes(14);
+    expect(harness.client.readPath.mock.calls[0]![0]).toEqual([{ pageTitle: 'July 28, 2026' }]);
+    expect(harness.client.readPath.mock.calls[13]![0]).toEqual([{ pageTitle: TODAY_TITLE }]);
+    expect(text).toContain('Scanned 14 daily note(s) from 2026-07-28 to 2026-08-10');
+  });
+
+  it('never claims completeness when it finds nothing', async () => {
+    pagesByTitle({});
+    const text = textOf(await harness.call('lorefold_decisions', {}));
+    expect(text).toContain('Widen `from` and `to`');
+    expect(text).toContain('windowed scan');
+    expect(text).not.toContain('no decisions exist');
+  });
+
+  it('collects decisions across days and renders their fields', async () => {
+    pagesByTitle({
+      'August 09, 2026': {
+        title: 'August 09, 2026',
+        children: [
+          storedDecision('d111111111', 'Use SQLite', {
+            ':decision/date': { string: '2026-08-09' },
+            ':decision/context': { string: '[[Lorefold]]' },
+            ':decision/rationale': { string: 'Fewer moving parts' },
+            ':decision/alternatives': {
+              string: '',
+              children: [{ string: 'Fluree — rejected: abandoned' }],
+            },
+          }),
+        ],
+      },
+      [TODAY_TITLE]: {
+        title: TODAY_TITLE,
+        children: [{ uid: 'note1', string: 'not a decision' }],
+      },
+    });
+
+    const text = textOf(await harness.call('lorefold_decisions', {}));
+    expect(text).toContain('Found 1 decision(s)');
+    expect(text).toContain('## Use SQLite');
+    expect(text).toContain('uid: d111111111');
+    expect(text).toContain('- rationale: Fewer moving parts');
+    expect(text).toContain('- alternative: Fluree — rejected: abandoned');
+  });
+
+  it('reports a replaced decision as superseded and names its successor', async () => {
+    pagesByTitle({
+      'August 09, 2026': {
+        title: 'August 09, 2026',
+        children: [storedDecision('old111111', 'Use Fluree')],
+      },
+      [TODAY_TITLE]: {
+        title: TODAY_TITLE,
+        children: [
+          storedDecision('new111111', 'Use SQLite', {
+            ':decision/supersedes': { string: '((old111111))' },
+          }),
+        ],
+      },
+    });
+
+    const text = textOf(await harness.call('lorefold_decisions', {}));
+    // The old block still STORES "accepted" — path/write cannot edit it.
+    expect(text).toContain('- status: superseded (stored as "accepted")');
+    expect(text).toContain('- superseded by: Use SQLite (new111111)');
+  });
+
+  it('filters on the effective status, not the stale stored one', async () => {
+    pagesByTitle({
+      'August 09, 2026': {
+        title: 'August 09, 2026',
+        children: [storedDecision('old111111', 'Use Fluree')],
+      },
+      [TODAY_TITLE]: {
+        title: TODAY_TITLE,
+        children: [
+          storedDecision('new111111', 'Use SQLite', {
+            ':decision/supersedes': { string: '((old111111))' },
+          }),
+        ],
+      },
+    });
+
+    const accepted = textOf(await harness.call('lorefold_decisions', { status: 'accepted' }));
+    expect(accepted).toContain('Use SQLite');
+    expect(accepted).not.toContain('## Use Fluree');
+
+    const superseded = textOf(await harness.call('lorefold_decisions', { status: 'superseded' }));
+    expect(superseded).toContain('## Use Fluree');
+  });
+
+  it('filters on context, case-insensitively', async () => {
+    pagesByTitle({
+      [TODAY_TITLE]: {
+        title: TODAY_TITLE,
+        children: [
+          storedDecision('d111111111', 'Acme thing', {
+            ':decision/context': { string: '[[Acme Corp]]' },
+          }),
+          storedDecision('d222222222', 'Internal thing', {
+            ':decision/context': { string: '[[Lorewood Labs]]' },
+          }),
+        ],
+      },
+    });
+
+    const text = textOf(await harness.call('lorefold_decisions', { context: 'acme' }));
+    expect(text).toContain('## Acme thing');
+    expect(text).not.toContain('## Internal thing');
+    expect(text).toContain('1 matching');
+  });
+
+  it('honours an explicit range', async () => {
+    pagesByTitle({});
+    await harness.call('lorefold_decisions', { from: '2026-08-08', to: '2026-08-10' });
+    expect(harness.client.readPath).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects a malformed date, an inverted range and an oversized one', async () => {
+    pagesByTitle({});
+
+    const bad = await harness.call('lorefold_decisions', { from: 'yesterday' });
+    expect(bad.isError).toBe(true);
+    expect(textOf(bad)).toContain('YYYY-MM-DD');
+
+    const inverted = await harness.call('lorefold_decisions', {
+      from: '2026-08-10',
+      to: '2026-08-01',
+    });
+    expect(inverted.isError).toBe(true);
+    expect(textOf(inverted)).toContain('is after');
+
+    const huge = await harness.call('lorefold_decisions', { from: '2020-01-01', to: '2026-08-10' });
+    expect(huge.isError).toBe(true);
+    expect(textOf(huge)).toContain('capped at 92');
+
+    expect(harness.client.readPath).not.toHaveBeenCalled();
+  });
+
+  it('says plainly in its description that this is a windowed scan, not a query', () => {
+    const description = harness.tools.get('lorefold_decisions')!.config.description ?? '';
+    expect(description).toContain('WINDOWED SCAN');
+    expect(description).toContain('M2b');
+    expect(description).toContain('never "none in the graph"');
   });
 });

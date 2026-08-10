@@ -34,8 +34,15 @@
  *   over JSON it arrives as a string and the event fails malli validation with
  *   `500 "Invalid event"`. It is therefore deliberately not exposed; every write
  *   appends last. Verified against the live M0 stack on 2026-08-10.
+ * - **`block/properties` cannot be written over JSON at all** (LF-38). The same
+ *   keywordization that breaks `relation` breaks property keys, which must
+ *   reach the server as page-title *strings*. `writePath` therefore switches
+ *   the request body to EDN whenever the data carries properties. See `edn.ts`
+ *   for the full mechanism. Responses are still requested as JSON, so only the
+ *   encoding of the request changes.
  */
 
+import { kw, map, str, vec, writeEdn, bool, type EdnValue } from './edn.js';
 import type { LorefoldConfig } from './config.js';
 
 /* ------------------------------------------------------------------ *
@@ -171,6 +178,62 @@ export function decodeNode(wire: unknown): IRNode {
   return block;
 }
 
+/** True when this node, or anything under it, carries a property block. */
+export function carriesProperties(node: IRNode): boolean {
+  if (node.properties !== undefined && Object.keys(node.properties).length > 0) return true;
+  return (node.children ?? []).some(carriesProperties);
+}
+
+/* ------------------------------------------------------------------ *
+ * EDN encoding, used only for writes that carry properties.
+ *
+ * This mirrors `encodeNode` exactly, with one difference that is the entire
+ * reason it exists: the keys of a node map are *keywords*, while the keys of
+ * the `block/properties` map are *strings*. JSON cannot express that
+ * distinction, which is why property writes fail over JSON.
+ * ------------------------------------------------------------------ */
+
+export function ednNode(node: IRNode): EdnValue {
+  const entries: [EdnValue, EdnValue][] = [];
+
+  if (isPage(node)) {
+    entries.push([kw(WIRE.pageTitle), str(node.title)]);
+  } else {
+    if (node.uid !== undefined) entries.push([kw(WIRE.blockUid), str(node.uid)]);
+    if (node.string !== undefined) entries.push([kw(WIRE.blockString), str(node.string)]);
+    if (node.open !== undefined) entries.push([kw(WIRE.blockOpen), bool(node.open)]);
+  }
+
+  if (node.children !== undefined) {
+    entries.push([kw(WIRE.blockChildren), vec(node.children.map(ednNode))]);
+  }
+  if (node.properties !== undefined) {
+    entries.push([
+      kw(WIRE.blockProperties),
+      // Property keys stay strings. This is the whole point.
+      map(Object.entries(node.properties).map(([key, value]) => [str(key), ednNode(value)])),
+    ]);
+  }
+
+  return map(entries);
+}
+
+function ednWireMap(wire: WireMap): EdnValue {
+  return map(
+    Object.entries(wire).map(([key, value]) => [kw(key), str(value as string)]),
+  );
+}
+
+/** The EDN body for `POST /api/path/write`. */
+export function encodeWriteBodyEdn(path: Path, data: IRNode[]): string {
+  return writeEdn(
+    map([
+      [kw('path'), vec(encodePath(path).map(ednWireMap))],
+      [kw('data'), vec(data.map(ednNode))],
+    ]),
+  );
+}
+
 export function encodePathRoot(root: PathRoot): WireMap {
   if ('pageTitle' in root) return { [WIRE.pageTitle]: root.pageTitle };
   if ('pageQuery' in root) return { [WIRE.pageQuery]: root.pageQuery };
@@ -258,6 +321,9 @@ export interface LorefoldClientOptions {
   timeoutMs?: number;
 }
 
+const JSON_CONTENT_TYPE = 'application/json';
+const EDN_CONTENT_TYPE = 'application/edn';
+
 export function basicAuthHeader(username: string, password: string): string {
   return 'Basic ' + Buffer.from(`${username}:${password}`, 'utf8').toString('base64');
 }
@@ -291,7 +357,12 @@ export class LorefoldClient {
    * body on the wire, not an error.
    */
   async readPath(path: Path): Promise<IRNode | null> {
-    const body = await this.post('/api/path/read', { path: encodePath(path) }, path);
+    const body = await this.post(
+      '/api/path/read',
+      JSON.stringify({ path: encodePath(path) }),
+      JSON_CONTENT_TYPE,
+      path,
+    );
     return body === null ? null : decodeNode(body);
   }
 
@@ -303,6 +374,9 @@ export class LorefoldClient {
    * Append only. Supplying an existing `uid` in `data` resolves to a *move*, not
    * an edit — in-place editing needs a server endpoint that does not exist yet
    * (LF-30). Do not try to route around this.
+   *
+   * The request goes out as JSON unless `data` carries properties, in which
+   * case it goes out as EDN because JSON cannot carry them (see `edn.ts`).
    */
   async writePath(path: Path, data: IRNode[]): Promise<IRNode | null> {
     if (data.length === 0) {
@@ -314,15 +388,25 @@ export class LorefoldClient {
           'an empty write crashes the server rather than no-opping.',
       );
     }
-    const body = await this.post(
-      '/api/path/write',
-      { path: encodePath(path), data: data.map(encodeNode) },
-      path,
-    );
-    return body === null ? null : decodeNode(body);
+
+    const useEdn = data.some(carriesProperties);
+    const [body, contentType] = useEdn
+      ? [encodeWriteBodyEdn(path, data), EDN_CONTENT_TYPE]
+      : [
+          JSON.stringify({ path: encodePath(path), data: data.map(encodeNode) }),
+          JSON_CONTENT_TYPE,
+        ];
+
+    const response = await this.post('/api/path/write', body, contentType, path);
+    return response === null ? null : decodeNode(response);
   }
 
-  private async post(endpoint: string, payload: unknown, path: Path): Promise<unknown> {
+  private async post(
+    endpoint: string,
+    body: string,
+    contentType: string,
+    path: Path,
+  ): Promise<unknown> {
     const url = `${this.config.url}${endpoint}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -332,11 +416,13 @@ export class LorefoldClient {
       response = await this.fetchImpl(url, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
+          'Content-Type': contentType,
+          // Always JSON coming back, whatever went out — muuntaja negotiates
+          // the two directions independently, so nothing here has to read EDN.
+          Accept: JSON_CONTENT_TYPE,
           Authorization: basicAuthHeader(this.config.username, this.config.password),
         },
-        body: JSON.stringify(payload),
+        body,
         signal: controller.signal,
       });
     } catch (cause) {
