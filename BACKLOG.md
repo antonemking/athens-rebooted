@@ -250,8 +250,10 @@ Search ships as a scan; the FTS5 upgrade rides on LF-24's SQLite and is a separa
 
 *Acceptance:* each endpoint returns JSON and EDN; documented with curl examples in the file's comment block, matching existing convention.
 
-### LF-29b · Fix two api.clj defects found while building the bridge · 1
-Both confirmed against source during the M2a review; fold into the LF-29 work rather than a separate pass.
+### LF-29b · Fix three api.clj defects found while building the bridge · 2
+All three confirmed against source; (1) and (2) during the M2a review, (3) during LF-38. Fold into the LF-29 work rather than a separate pass.
+
+Defect (3) is the highest priority of the three: until it is fixed, **no client can write a property over JSON**, which makes EDN mandatory for the entire decision layer.
 
 1. **`"data":[]` crashes the request.** `write-in-path-evt` (`src/clj/athens/self_hosted/web/api.clj:140-141`) does `(throw (ex-info "No data to write" data))` where `data` is a *vector*. `ex-info` requires a map for ex-data, so the intended error becomes a ClassCastException. Fix: `{:data data}`. Add a test — this is the API's first.
 2. **`relation` is unreachable over JSON.** It must arrive as a Clojure keyword; a JSON string fails malli validation with a 500 "Invalid event". Either coerce strings to keywords at the API boundary or document the field as EDN-only. Until then every REST write appends last, which the MCP bridge relies on.
