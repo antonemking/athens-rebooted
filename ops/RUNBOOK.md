@@ -401,6 +401,21 @@ either way.
 
 ## 13. Troubleshooting
 
+**`athens` never goes healthy while `fluree` reports healthy, and the athens log
+ends at `Server contact error … /fdb/health` then `Connection has gone stale`.**
+The opposite of the slow-first-boot case below: Fluree came up, but athens had
+already given up reaching it. Seen after Docker Desktop auto-started both
+containers together on a machine reboot, where the dependency ordering that
+`depends_on` enforces at `up` time does not apply.
+
+```bash
+docker compose -f ops/compose.m0.yml restart athens
+```
+
+Recovers in about fifteen seconds. If it recurs on every boot, stop relying on
+the auto-start and bring the stack up explicitly with `up -d`, which honours the
+health-gated `depends_on`.
+
 **`docker compose config` shows `CONFIG_EDN` without its inner double quotes.**
 The EDN-in-YAML quoting trap. The server parses this value as EDN, where string
 values must be double-quoted; YAML strips those quotes from an unquoted or

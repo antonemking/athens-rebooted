@@ -240,6 +240,16 @@ Search ships as a scan; the FTS5 upgrade rides on LF-24's SQLite and is a separa
 
 *Acceptance:* each endpoint returns JSON and EDN; documented with curl examples in the file's comment block, matching existing convention.
 
+### LF-29b · Fix two api.clj defects found while building the bridge · 1
+Both confirmed against source during the M2a review; fold into the LF-29 work rather than a separate pass.
+
+1. **`"data":[]` crashes the request.** `write-in-path-evt` (`src/clj/athens/self_hosted/web/api.clj:140-141`) does `(throw (ex-info "No data to write" data))` where `data` is a *vector*. `ex-info` requires a map for ex-data, so the intended error becomes a ClassCastException. Fix: `{:data data}`. Add a test — this is the API's first.
+2. **`relation` is unreachable over JSON.** It must arrive as a Clojure keyword; a JSON string fails malli validation with a 500 "Invalid event". Either coerce strings to keywords at the API boundary or document the field as EDN-only. Until then every REST write appends last, which the MCP bridge relies on.
+
+Also consider: there is no exception middleware, so any rejected request surfaces as a 500 carrying the thrown message. That text is genuinely the most useful part of the response, so if you add middleware, preserve it.
+
+*Acceptance:* `"data":[]` returns a clean 400-class error with a readable message; a decision is made and documented on `relation`.
+
 ### LF-30 · Add write endpoints to `api.clj` · 3
 `/api/block/save` and `/api/block/remove` via `build-block-save-op` / `build-block-remove-op`. These exist because path-write can only append — writing an existing uid through it resolves to a *move*.
 *Depends on LF-29.*
