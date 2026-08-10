@@ -25,7 +25,8 @@ you only want to run it.
 13. [Troubleshooting](#13-troubleshooting)
 14. [Security posture](#14-security-posture)
 15. [Deployment target (LF-8)](#15-deployment-target-lf-8)
-16. [Human verification checklist](#16-human-verification-checklist)
+16. [Provisioning a workspace: the Welcome page](#16-provisioning-a-workspace-the-welcome-page)
+17. [Human verification checklist](#17-human-verification-checklist)
 
 ---
 
@@ -625,7 +626,88 @@ not the same as a backup existing.
 
 ---
 
-## 16. Human verification checklist
+## 16. Provisioning a workspace: the Welcome page
+
+Every new workspace seeds itself. `event_log.clj` sets `initial-events` to
+`datoms/welcome-events`, and `init!` writes them **only when the Fluree ledger
+does not exist yet** — so this happens once, on a genuinely fresh graph, and
+never again. A restart replays the log instead (§10).
+
+Those seed events are two, not one:
+
+| Event | Effect |
+|---|---|
+| the paste op | creates the page titled `Welcome`, with upstream Athens' tutorial content |
+| `make-shortcut-new-op "Welcome"` | pins that page to the left sidebar |
+
+Two consequences worth being clear about, because both have already cost time:
+
+**The content is Athens', not ours.** A fresh workspace does not come with the
+Lorefold guide. It comes with the upstream tutorial — outliner tips, LaTeX
+samples, and an S3 GIF, a YouTube embed and an OpenStreetMap iframe, all
+third-party fetches from a page that is meant to introduce a decision ledger.
+Replacing it is a manual provisioning step, every time, until the seed itself
+changes (see below).
+
+**The shortcut lives on the page entity, so never delete the page.**
+
+```
+Cmd-A, delete   ✅  clears the blocks, page entity survives, shortcut survives
+Delete page     ❌  destroys the entity, and the shortcut with it
+```
+
+There is no way to re-pin from the API — `:page/sidebar` is set by a
+client-dispatched op and `path/write` only emits `:block/new` and `:block/save`.
+Re-pinning is a manual click on the caret beside the page title.
+
+Deleting the page is worse than losing the shortcut. `:page/remove`
+(`resolver/atomic.cljc`) also runs `replace-linked-refs-tx`, which rewrites
+`[[Welcome]]` into plain-text `Welcome` everywhere else in the graph. The
+flattened blocks then surface under **Unlinked References** on any page whose
+name they mention, and M0 has no `/api/search` or `/api/pages` (LF-29) to help
+you find them. Do not use *Link all* on that panel — it promotes the debris from
+unlinked to linked and makes it harder to spot.
+
+### The procedure
+
+1. Boot the stack (§3) and let the fresh ledger seed. Confirm in the log:
+   `Fluree ledger for event-log not found, creating events/log`, then
+   `Populating fresh ledger with initial events...`, then `Replayed 2 events.`
+2. Open `Welcome` in a browser. **`Cmd-A`, delete.** Clear the blocks; do not
+   delete the page.
+3. Write the workspace's own guide into it, e.g. through the MCP bridge with
+   `lorefold_page_write` at root `{pageTitle: "Welcome"}`.
+4. Confirm the sidebar shortcut is still there.
+
+Order matters when writing: the API is append-only with no insert, so blocks
+land in the order you write them and cannot be reordered afterward except by
+dragging in a browser. Write parents before children and sections in final
+reading order.
+
+Two smaller traps when authoring that page:
+
+- Any `[[Name]]` or `#Name` **creates that page**. Use the empty `[[]]`, `#`
+  and `#[[]]` forms for syntax examples, and point live examples only at pages
+  that already exist.
+- Block references are uid-bound. `((uid))` does not survive a graph rebuild,
+  so a demo reference must be rewritten against the new uid after any reset.
+
+### Making it automatic
+
+The durable fix is to change `welcome-page-internal-representation` in
+`src/cljc/athens/athens_datoms.cljc`, keeping the `make-shortcut-new-op` line
+beside it, so every fresh graph seeds the right page already pinned with no
+manual step at all.
+
+That is not possible in M0, which runs pinned published images and compiles
+nothing; `athens.dockerfile` expects a prebuilt
+`target/athens-lan-party-standalone.jar`. It becomes nearly free at M1, where
+LF-18 already commits to building the SPA from source to strip telemetry —
+treat it as a rider on **LF-20**, not as separate work.
+
+---
+
+## 17. Human verification checklist
 
 These need a person. Do not mark them off from a script — the point of each is
 something only eyes on real browsers can confirm. This is LF-7.
