@@ -13,6 +13,7 @@
 #
 # Configuration (environment, all optional):
 #   DOCKER_WAIT_SECONDS   how long to wait for the daemon   (default: 300)
+#   HEALTH_WAIT_SECONDS   how long to wait for athens       (default: 300)
 #   COMPOSE_FILE_M0       compose file                      (default: <repo>/ops/compose.m0.yml)
 
 set -euo pipefail
@@ -22,6 +23,7 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 COMPOSE_FILE_M0="${COMPOSE_FILE_M0:-${REPO_ROOT}/ops/compose.m0.yml}"
 DOCKER_WAIT_SECONDS="${DOCKER_WAIT_SECONDS:-300}"
+HEALTH_WAIT_SECONDS="${HEALTH_WAIT_SECONDS:-300}"
 
 # launchd hands a job a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), which does
 # not include the Docker CLI or Homebrew. Add both Intel and Apple-Silicon
@@ -80,18 +82,65 @@ case "${BIND_ADDR}" in
   *)          HEALTH_HOST="${BIND_ADDR}" ;;
 esac
 
+HEALTH_URL="http://${HEALTH_HOST}:3010/health-check"
+
+# wait_for_health <seconds> — 0 if athens answers within the budget, 1 if not.
+wait_for_health() {
+  local budget="$1"
+  local waited=0
+  until curl -fsS --max-time 5 "${HEALTH_URL}" >/dev/null 2>&1; do
+    if [ "${waited}" -ge "${budget}" ]; then
+      return 1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  log "athens answered ${HEALTH_URL} after ${waited}s"
+  return 0
+}
+
 # `up -d` returns as soon as the containers are created; athens waits on
 # fluree's health check, and fluree's first boot can take two to three minutes.
 # Report the real state rather than implying success.
 log "waiting for the athens health check on ${HEALTH_HOST}:3010"
-waited=0
-until curl -fsS --max-time 5 "http://${HEALTH_HOST}:3010/health-check" >/dev/null 2>&1; do
-  if [ "${waited}" -ge 300 ]; then
-    log "WARNING: athens is not healthy after 300s. Check: docker compose -f ${COMPOSE_FILE_M0} logs athens"
-    exit 0
-  fi
-  sleep 5
-  waited=$((waited + 5))
-done
+if wait_for_health "${HEALTH_WAIT_SECONDS}"; then
+  log "stack is up and healthy"
+  exit 0
+fi
 
-log "stack is up and healthy (took ${waited}s after compose up)"
+# ---------------------------------------------------------------------------
+# Recovery: the restart race
+# ---------------------------------------------------------------------------
+# `depends_on: condition: service_healthy` orders `compose up`, but the Docker
+# daemon does not honour it when `restart: always` brings the containers back
+# after a crash, a daemon restart or a reboot. Both then start in parallel,
+# athens queries fluree before its web server is listening, fails with
+#
+#   "xhttp error - http://fluree:8090/fdb/health"
+#
+# and never retries. The container stays "Up" and the port stays published while
+# nothing is listening on 3010 — a stack that looks healthy from `docker ps` and
+# refuses every connection.
+#
+# Re-running `up -d` cannot clear this: it is a no-op against a running container
+# whose config still matches. Athens has to be recreated explicitly, and only
+# once fluree is genuinely healthy — otherwise this just loops the same race.
+log "athens did not answer; checking fluree before recreating it"
+
+FLUREE_HEALTH="$(docker compose -f "${COMPOSE_FILE_M0}" ps fluree --format '{{.Health}}' 2>/dev/null | tail -1)"
+if [ "${FLUREE_HEALTH}" != "healthy" ]; then
+  log "WARNING: athens is down and fluree is '${FLUREE_HEALTH:-unknown}', not healthy."
+  log "         Recreating athens would not help. Check: docker compose -f ${COMPOSE_FILE_M0} logs fluree"
+  exit 0
+fi
+
+log "fluree is healthy, so this looks like the startup race — recreating athens once"
+docker compose -f "${COMPOSE_FILE_M0}" up -d --force-recreate athens
+
+if wait_for_health "${HEALTH_WAIT_SECONDS}"; then
+  log "stack is up and healthy after recreating athens"
+  exit 0
+fi
+
+log "WARNING: athens is still not healthy after being recreated."
+log "         Check: docker compose -f ${COMPOSE_FILE_M0} logs athens"
