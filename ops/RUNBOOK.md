@@ -423,6 +423,12 @@ docker compose -f ops/compose.m0.yml down
 add `-v` to `down` unless you mean to lose the graph, and take a backup first
 either way.
 
+**Running it unattended on a Mac.** [`ops/macos/`](macos/README.md) has launchd
+agents that bring the stack up at login and run the nightly backup plus the
+off-host copy, along with the Docker Desktop memory setting, the tailnet bind
+address, and the sleep settings. Read the caveat at the top of that file first:
+Intel only, and a laptop is not a server.
+
 ---
 
 ## 13. Troubleshooting
@@ -604,6 +610,14 @@ Follow-on this creates: pick the off-host backup target on the tailnet and
 If the most always-on machine you have is the laptop, that is workable but it
 makes the off-host backup follow-on urgent rather than optional: a closed lid
 is an unreachable graph, and a dead SSD is a dead ledger.
+
+**The follow-on is now wired.** `ops/backup/offhost.sh` copies the newest hot
+export and cold archive to a destination outside this disk
+(`LOREFOLD_OFFHOST_DEST` in `ops/.env`), and on macOS
+[`ops/macos/`](macos/README.md) runs it nightly under launchd alongside the
+export itself. The decision stays half-realised until that destination is
+actually configured and a restore has been rehearsed — the script existing is
+not the same as a backup existing.
 
 > This is a real decision, made under real constraints, with alternatives that
 > lost for stated reasons — the exact shape `doc/decision-object-model.md`

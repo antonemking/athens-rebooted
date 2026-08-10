@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Lorefold M0 — nightly backup at 02:30 local time.
+
+  REPLACE __REPO_ROOT__ with the absolute path to your clone before installing.
+
+  Install:
+    sed "s|__REPO_ROOT__|$PWD|g" ops/macos/com.lorewood.lorefold.backup.plist \
+      > ~/Library/LaunchAgents/com.lorewood.lorefold.backup.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lorewood.lorefold.backup.plist
+
+  Run it once by hand to prove it works, rather than finding out in a month:
+    launchctl kickstart -p gui/$(id -u)/com.lorewood.lorefold.backup
+
+  On a laptop that sleeps at 02:30, launchd runs a missed StartCalendarInterval
+  job once the machine wakes. You get one run per day, not a run at exactly
+  02:30 — which is the correct behaviour here.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lorewood.lorefold.backup</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO_ROOT__/ops/macos/lorefold-backup.sh</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>2</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO_ROOT__</string>
+
+  <key>StandardOutPath</key>
+  <string>__REPO_ROOT__/athens-data/logs/launchd-backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>__REPO_ROOT__/athens-data/logs/launchd-backup.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <!-- Low I/O priority: this runs a tar of the whole data directory on the same
+       disk the machine works from. -->
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>
