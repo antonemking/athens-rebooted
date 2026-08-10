@@ -2,7 +2,9 @@
 
 **Repo:** `antonemking/athens-rebooted`, a fork of `athensresearch/athens` frozen at `v2.1.0-beta.5` (HEAD `b463a97`, 2022-12-12, the final upstream commit).
 **Prepared:** 2026-08-09, from a deep codebase exploration (build health, runtime architecture, product surface) plus public-record research on the company.
-**Status of this document:** Investigative report and standing proposal. Positioning revised 2026-08-09: what began as "reboot Athens as a personal command center" is now **Lorefold, a decision intelligence platform**. Sections 1, 5, and 8-10 carry the reframe; the investigation sections (2-4, 6-7) stand as written. Nothing in the roadmap section has been started.
+**Status of this document:** Investigative report and standing proposal. Positioning revised 2026-08-09: what began as "reboot Athens as a personal command center" is now **Lorefold, a decision intelligence platform**. Sections 1, 5, and 8-10 carry the reframe; the investigation sections (2-4, 6-7) stand as written.
+
+**Progress:** M0 (resurrect) shipped — see `ops/RUNBOOK.md`. **The load-bearing inference of this whole report is now runtime-confirmed: the published jar does serve the browser app at `:3010`.** It was derived from CI job ordering (the `release-server` job packed `resources/public` into the uberjar after `build-app`) and had never been observed until the M0 run. Everything downstream that assumed zero-compilation resurrection holds. M2a (agent bridge) is next; see `doc/prompts/`.
 
 ---
 
