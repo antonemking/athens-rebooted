@@ -245,9 +245,26 @@ Once, on a scratch stack, with no pressure:
 Write the date you did this here:
 
 ```
-Round trip last verified:
-By:
-Notes:
+Round trip last verified: 2026-08-09
+By: antonemking (with Claude Code)
+Notes: Isolated scratch stack — copy of ops/ under /tmp, project name
+  lorefold-scratch, host port 3011, its own empty athens-data/. Production on
+  3010 was never stopped and stayed healthy throughout.
+
+  Source: backup.sh hot against the live stack -> backup-2026-08-09.edn,
+  22547 bytes, 7 events.
+
+  §4 on an empty ledger: loaded all 7 events on the first run, no caveat, as
+  documented. Restored graph read back byte-identical to production, block
+  UIDs included.
+
+  §4 caveat reproduced deliberately: re-running load against the now-populated
+  ledger printed "Deleting the current ledger before loading data...." then
+  "Please restart the fluree docker." and loaded NOTHING. `restart fluree` +
+  re-running the identical command loaded all 7. Recovery works as written.
+
+  §5 step 4: fresh export from the restored stack was byte-identical to the
+  source export (22547 bytes both).
 ```
 
 Until that line is filled in, treat the backups as untested.
