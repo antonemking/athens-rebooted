@@ -37,11 +37,20 @@ Two backup kinds, both driven by `ops/backup/backup.sh`:
   ledger, so it is safe while people are working. This is the portable one: it
   is also the migration format used to leave Fluree behind in M1.5.
 - **Cold (physical, weekly).** `backup.sh cold` stops the stack, tars all of
-  `athens-data/` to `ops/backup/archives/athens-data-YYYY-MM-DD.tar.gz`, and
+  `athens-data/` to
+  `ops/backup/archives/<instance>/athens-data-<instance>-YYYY-MM-DD.tar.gz`, and
   starts it again. Restores fastest, but only onto a compatible Fluree version.
 
 Rotation is automatic: `HOT_KEEP` (default 14) daily exports, `COLD_KEEP`
 (default 8) weekly tarballs.
+
+**More than one instance on the host?** Every command below takes
+`LOREFOLD_ENV_FILE=ops/<instance>.env`, and compose needs
+`--env-file ops/<instance>.env` before `-f` or it acts on the default instance
+instead. The instance's data directory, archive directory and archive filenames
+all carry its name; see `ops/RUNBOOK.md` §18. **Restoring the wrong graph over
+a live one is the worst outcome in this document** — check `backup.sh verify`
+reports the instance you mean before you move anything.
 
 Both hot exports and the tarball are **plaintext copies of everything in the
 graph**, unencrypted. Treat them exactly as you treat the graph itself; if they
@@ -65,7 +74,7 @@ a failed run leaves the previous good backup in place and exits non-zero.
 
 Off-host copies are your problem: a tarball on the same disk as the graph does
 not survive the disk. Ship `athens-data/datascript/backup-*.edn` and
-`ops/backup/archives/*.tar.gz` somewhere else on whatever schedule your
+`ops/backup/archives/<instance>/*.tar.gz` somewhere else on whatever schedule your
 deployment target (LF-8) makes possible.
 
 ---
@@ -83,9 +92,12 @@ docker compose -f ops/compose.m0.yml down
 #    to be from the wrong date, this is the only copy of the newer events.
 mv athens-data athens-data.broken.$(date +%s)
 
-# 3. Unpack. The tarball contains a top-level athens-data/ directory, so unpack
-#    at the repository root.
-tar -xzf ops/backup/archives/athens-data-YYYY-MM-DD.tar.gz -C .
+# 3. Unpack. The tarball contains a single top-level directory named after that
+#    instance's data directory — athens-data/ for the default instance,
+#    athens-data-dave/ for a client channel — so unpack at its PARENT, which
+#    for both of those is the repository root. Check first if unsure:
+#      tar -tzf <archive> | head -1
+tar -xzf ops/backup/archives/m0/athens-data-m0-YYYY-MM-DD.tar.gz -C .
 
 # 4. Boot and wait for both services to be healthy (Fluree is slow).
 docker compose -f ops/compose.m0.yml up -d

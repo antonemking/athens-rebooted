@@ -284,6 +284,29 @@ Claude answers "what links to [[Client X]]?" and "what tasks are open?" correctl
 
 ---
 
+## Epic H: Client channels
+
+Isolation for a client is a second instance, because one graph per server process and one shared password is the whole of the permissions model. The client instance is a *channel* — the pages you pass back and forth — while your own workspace stays one graph holding every client. Rationale, alternatives and accepted cost: `doc/client-channel-model.md`.
+
+### LF-40 · Run more than one instance on one host · 2 — **done**
+Parameterize `ops/compose.m0.yml` on `LOREFOLD_INSTANCE` / `LOREFOLD_DATA_DIR` / `LOREFOLD_PORT`, all defaulting to what the single-instance M0 stack already uses so an existing deployment is untouched. Make `backup.sh`, `offhost.sh` and the macOS launchd scripts take `LOREFOLD_ENV_FILE` and derive everything from it. Add `ops/instance.env.example` and `ops/RUNBOOK.md` §18.
+
+Acceptance: two stacks run side by side with separate graphs, passwords and ports; per-instance backups cannot overwrite each other; defaults leave the existing stack byte-for-byte identical. *Verified by script; the compose interpolation itself needs a host with Docker — see LF-41.*
+
+### LF-41 · [HUMAN] Stand up the first client channel · 2
+Provision an instance per `ops/RUNBOOK.md` §18, on the always-on host. Confirm: `compose config` resolves the project name, port and data directory per instance; both stacks healthy at once; the client password does **not** open the workspace instance; Welcome page replaced (§16) before the client sees it; backups run for both and land in separate directories; the client reaches only their own node over the tailnet.
+*Depends on LF-40.*
+
+### LF-42 · Record the client-channel decision in the ledger · 1
+`doc/client-channel-model.md` §8 has the exact `lorefold_decision_record` call. Needs a running Fluree-backed workspace — the previous tenancy decision was recorded into an in-memory graph and lost (`doc/lf38-verification.md`).
+*Depends on a durable workspace instance.*
+
+### LF-43 · Carry decisions from a channel into the ledger · 2
+The accepted cost in `doc/client-channel-model.md` §4: channel content is invisible to workspace queries until something carries it across, and a missed carry-across leaves a hole that looks like "no decision was made". Decide the mechanism — agent on a schedule, agent on demand, or by hand — and make it a named habit with a written procedure. Do not build a sync layer; that alternative was rejected.
+*Depends on LF-41. Do after two weeks of live use, not before — the right mechanism is not knowable yet.*
+
+---
+
 ## Deliberately not scheduled
 
 Parked with reasons in `REBOOT.md` (sections 5, 7, 11): CRDT conflict resolution, mobile client, real user accounts and permissions, image upload for web, reference-list virtualization, the GitHub docs integration, and any frontend framework upgrade.

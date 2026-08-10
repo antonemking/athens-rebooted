@@ -13,10 +13,22 @@
 # Restore procedure and its sharp edges: ops/backup/restore.md
 #
 # Configuration (environment, all optional):
+#   LOREFOLD_ENV_FILE compose env file        (default: <repo>/ops/.env)
 #   COMPOSE_FILE_M0   compose file            (default: <repo>/ops/compose.m0.yml)
 #   HOT_KEEP          daily exports to keep   (default: 14)
 #   COLD_KEEP         weekly tarballs to keep (default: 8)
-#   ARCHIVE_DIR       where cold tars go      (default: <repo>/ops/backup/archives)
+#   ARCHIVE_DIR       where cold tars go      (default: <script>/archives/<instance>)
+#
+# Multiple instances on one host: point LOREFOLD_ENV_FILE at that instance's
+# env file and everything else follows from it — the compose project, the data
+# directory, the archive directory and the archive filenames all carry the
+# instance name, so two clients' backups cannot overwrite each other.
+#
+#   LOREFOLD_ENV_FILE=ops/dave.env ops/backup/backup.sh hot
+#
+# Getting this wrong is quiet, not loud: with the wrong env file the compose
+# project resolves to the default instance and you export the wrong graph into
+# the right-looking filename.
 
 set -euo pipefail
 
@@ -24,8 +36,37 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 COMPOSE_FILE_M0="${COMPOSE_FILE_M0:-${REPO_ROOT}/ops/compose.m0.yml}"
-DATA_DIR="${REPO_ROOT}/athens-data"
-ARCHIVE_DIR="${ARCHIVE_DIR:-${SCRIPT_DIR}/archives}"
+ENV_FILE="${LOREFOLD_ENV_FILE:-${REPO_ROOT}/ops/.env}"
+
+# Read config from the env file without sourcing it. Sourcing would execute
+# whatever is in there, and it is the one file here holding a real password.
+env_get() {
+  local key="$1"
+  [ -f "${ENV_FILE}" ] || return 0
+  sed -n "s/^[[:space:]]*${key}=//p" "${ENV_FILE}" | tail -1
+}
+
+LOREFOLD_INSTANCE="${LOREFOLD_INSTANCE:-$(env_get LOREFOLD_INSTANCE)}"
+LOREFOLD_INSTANCE="${LOREFOLD_INSTANCE:-m0}"
+
+# LOREFOLD_DATA_DIR is relative to ops/ when relative, matching how compose
+# resolves the bind mounts in compose.m0.yml. One rule, not two — if these ever
+# disagree the backup silently archives a directory nobody is writing to.
+LOREFOLD_DATA_DIR="${LOREFOLD_DATA_DIR:-$(env_get LOREFOLD_DATA_DIR)}"
+LOREFOLD_DATA_DIR="${LOREFOLD_DATA_DIR:-../athens-data}"
+case "${LOREFOLD_DATA_DIR}" in
+  /*) DATA_DIR="${LOREFOLD_DATA_DIR}" ;;
+  *)  DATA_DIR="${REPO_ROOT}/ops/${LOREFOLD_DATA_DIR}" ;;
+esac
+# Canonicalise so the cold tar's -C/basename split below is unambiguous. The
+# directory may not exist yet on a first run, so this is best-effort.
+if [ -d "${DATA_DIR}" ]; then
+  DATA_DIR="$(cd -- "${DATA_DIR}" && pwd -P)"
+fi
+
+# Per-instance by default: two instances sharing one archive directory would
+# both write athens-data-<date>.tar.gz and each would prune the other's.
+ARCHIVE_DIR="${ARCHIVE_DIR:-${SCRIPT_DIR}/archives/${LOREFOLD_INSTANCE}}"
 HOT_KEEP="${HOT_KEEP:-14}"
 COLD_KEEP="${COLD_KEEP:-8}"
 
@@ -49,7 +90,10 @@ RESTART_STACK_ON_EXIT=0
 log()  { printf '%s [backup] %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"; }
 die()  { printf '%s [backup] ERROR: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >&2; exit 1; }
 
-compose() { docker compose -f "${COMPOSE_FILE_M0}" "$@"; }
+# --env-file must come before -f, and it REPLACES ops/.env rather than merging.
+# Passing it explicitly is what makes the compose project name resolve to this
+# instance instead of the default one.
+compose() { docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE_M0}" "$@"; }
 
 # Every step is individually best-effort: one failure must not stop the rest,
 # and bringing the stack back matters more than anything else here.
@@ -76,6 +120,10 @@ acquire_lock() {
 require_docker() {
   command -v docker >/dev/null 2>&1 || die "docker not found on PATH"
   [ -f "${COMPOSE_FILE_M0}" ] || die "compose file not found: ${COMPOSE_FILE_M0}"
+  # Without this the compose project name falls back to the default instance,
+  # so a typo in LOREFOLD_ENV_FILE would back up the wrong graph under this
+  # instance's filenames instead of failing.
+  [ -f "${ENV_FILE}" ] || die "env file not found: ${ENV_FILE} (set LOREFOLD_ENV_FILE, or create ops/.env from ops/.env.example)"
 }
 
 # Keep the newest $2 files matching glob $1, delete the rest.
@@ -159,14 +207,21 @@ do_cold() {
   require_docker
   acquire_lock
 
-  local stamp out tmp
+  local stamp out tmp data_parent data_base
   stamp="$(date +%F)"
   mkdir -p "${ARCHIVE_DIR}"
-  out="${ARCHIVE_DIR}/athens-data-${stamp}.tar.gz"
+  # The instance name is in the filename as well as the directory, so a tarball
+  # that gets moved or copied off somewhere still says which graph it holds.
+  out="${ARCHIVE_DIR}/athens-data-${LOREFOLD_INSTANCE}-${stamp}.tar.gz"
   tmp="${out}.partial"
   TMP_FILE="${tmp}"
 
   [ -d "${DATA_DIR}" ] || die "no data directory at ${DATA_DIR}"
+
+  # Archive DATA_DIR by name from its parent rather than assuming it is
+  # <repo>/athens-data, so a per-instance directory anywhere works.
+  data_parent="$(dirname -- "${DATA_DIR}")"
+  data_base="$(basename -- "${DATA_DIR}")"
 
   if [ -n "$(compose ps --status running --services 2>/dev/null || true)" ]; then
     # Set BEFORE stopping anything, so the EXIT trap brings the stack back up
@@ -178,20 +233,22 @@ do_cold() {
     log "stack already stopped — leaving it stopped"
   fi
 
-  log "archiving athens-data/ to $(basename "${out}")"
+  log "archiving ${data_base}/ to $(basename "${out}")"
   rm -f -- "${tmp}"
   # Exclude our own archive dir if someone points ARCHIVE_DIR inside the data
   # directory, and the lock, which is by definition held right now.
   tar -czf "${tmp}" \
-    -C "${REPO_ROOT}" \
-    --exclude='athens-data/.backup.lock' \
-    --exclude='athens-data/archives' \
-    athens-data
+    -C "${data_parent}" \
+    --exclude="${data_base}/.backup.lock" \
+    --exclude="${data_base}/archives" \
+    "${data_base}"
   mv -f -- "${tmp}" "${out}"
   TMP_FILE=""
   log "wrote ${out} ($(wc -c < "${out}" | tr -d ' ') bytes)"
 
-  prune "${ARCHIVE_DIR}/athens-data-*.tar.gz" "${COLD_KEEP}"
+  # Scoped to this instance's own filenames. A shared ARCHIVE_DIR set by hand
+  # would otherwise have each instance prune the others' archives away.
+  prune "${ARCHIVE_DIR}/athens-data-${LOREFOLD_INSTANCE}-*.tar.gz" "${COLD_KEEP}"
   log "cold backup complete"
 }
 
@@ -200,6 +257,8 @@ do_cold() {
 # ---------------------------------------------------------------------------
 do_verify() {
   local latest_hot latest_cold
+  echo "instance       : ${LOREFOLD_INSTANCE}"
+  echo "env file       : ${ENV_FILE}"
   echo "data directory : ${DATA_DIR}"
   echo "archive dir    : ${ARCHIVE_DIR}"
   echo
@@ -208,11 +267,11 @@ do_verify() {
   ls -lh "${DATA_DIR}"/datascript/backup-*.edn 2>/dev/null || echo "  none"
   echo
   echo "cold archives (keep ${COLD_KEEP}):"
-  ls -lh "${ARCHIVE_DIR}"/athens-data-*.tar.gz 2>/dev/null || echo "  none"
+  ls -lh "${ARCHIVE_DIR}"/athens-data-${LOREFOLD_INSTANCE}-*.tar.gz 2>/dev/null || echo "  none"
   echo
 
   latest_hot="$(ls -1t "${DATA_DIR}"/datascript/backup-*.edn 2>/dev/null | head -1 || true)"
-  latest_cold="$(ls -1t "${ARCHIVE_DIR}"/athens-data-*.tar.gz 2>/dev/null | head -1 || true)"
+  latest_cold="$(ls -1t "${ARCHIVE_DIR}"/athens-data-${LOREFOLD_INSTANCE}-*.tar.gz 2>/dev/null | head -1 || true)"
   [ -n "${latest_hot}"  ] && echo "latest hot : ${latest_hot}"  || echo "latest hot : NONE — you have no logical backup"
   [ -n "${latest_cold}" ] && echo "latest cold: ${latest_cold}" || echo "latest cold: NONE"
   echo
@@ -221,7 +280,7 @@ do_verify() {
 }
 
 usage() {
-  sed -n '3,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '3,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-hot}" in

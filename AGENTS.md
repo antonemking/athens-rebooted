@@ -62,6 +62,8 @@ Traps:
 | Server config defaults | `src/clj/config.default.edn` |
 | Ops, compose, backups | `ops/` |
 | MCP bridge | `tools/lorefold-mcp/` |
+| Decision object model | `doc/decision-object-model.md` |
+| Client isolation and the channel model | `doc/client-channel-model.md` |
 
 ## Architecture facts worth knowing before you edit
 

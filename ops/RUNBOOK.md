@@ -27,6 +27,7 @@ you only want to run it.
 15. [Deployment target (LF-8)](#15-deployment-target-lf-8)
 16. [Provisioning a workspace: the Welcome page](#16-provisioning-a-workspace-the-welcome-page)
 17. [Human verification checklist](#17-human-verification-checklist)
+18. [A second workspace: provisioning a client channel](#18-a-second-workspace-provisioning-a-client-channel)
 
 ---
 
@@ -387,7 +388,12 @@ ops/backup/backup.sh verify  # report on what exists
 
 `hot` writes `athens-data/datascript/backup-YYYY-MM-DD.edn` and prunes old
 ones. Cron it nightly. `cold` takes the stack down for the duration of the tar,
-so schedule it weekly at a quiet hour.
+so schedule it weekly at a quiet hour, and writes
+`ops/backup/archives/<instance>/athens-data-<instance>-YYYY-MM-DD.tar.gz`.
+
+Running more than one instance? Every command here takes
+`LOREFOLD_ENV_FILE=ops/<instance>.env` and derives the rest from it —
+[section 18](#18-a-second-workspace-provisioning-a-client-channel).
 
 Suggested crontab (adjust the path):
 
@@ -740,3 +746,119 @@ something only eyes on real browsers can confirm. This is LF-7.
       once, you do not have backups.
 - [x] **Deployment target decided** and written into
       [section 15](#15-deployment-target-lf-8).
+
+---
+
+## 18. A second workspace: provisioning a client channel
+
+Read `doc/client-channel-model.md` first. It explains why a client gets a
+*channel* rather than a workspace, and why your own graph never splits. This
+section is the mechanics.
+
+### Why this is a whole stack and not a setting
+
+There is no multi-tenancy: **one graph per server process**, and no accounts,
+roles or per-page permissions ([section 14](#14-security-posture)). A person
+you need to keep out of your other clients' work has to be kept out at the
+process boundary, because there is no boundary inside a graph. So isolation
+means a second `athens` container, a second `fluree` container, a second data
+directory, a second password, and a second port.
+
+The cost is real and worth stating before you commit: **the two graphs cannot
+see each other.** Backlinks, `[[Client]]` page links and the free
+`lorefold/decision` index all stop at the instance boundary, and a browser
+connects to exactly one server. That is why the client instance stays thin and
+your ledger stays whole — see the architecture doc.
+
+Budget roughly **4 GB of RAM per instance**: two JVMs, the athens server at
+`-Xmx2560m` plus fluree's own heap. They do not scale down when idle.
+
+### Provision one
+
+```bash
+# 1. Its own env file. Start from the template — --env-file REPLACES ops/.env
+#    rather than merging with it, so a fragment will not work.
+cp ops/instance.env.example ops/dave.env
+$EDITOR ops/dave.env          # instance name, data dir, port, a NEW password
+
+# 2. Confirm what compose actually resolved, before starting anything.
+docker compose --env-file ops/dave.env -f ops/compose.m0.yml config \
+  | grep -E 'name:|published:|source:|CONFIG_EDN'
+
+# 3. Up.
+docker compose --env-file ops/dave.env -f ops/compose.m0.yml up -d
+
+# 4. Health, on that instance's port.
+curl -fsS http://127.0.0.1:3011/health-check
+```
+
+Then walk [section 3](#3-first-boot) onward for that instance: the API smoke
+test, telemetry off, and the Welcome page replacement in
+[section 16](#16-provisioning-a-workspace-the-welcome-page) — a fresh graph
+seeds upstream Athens' tutorial, with third-party fetches in it, which is not
+what you want a client to open first.
+
+### The traps, all of which are quiet
+
+**`--env-file` must come before `-f`, and it must be on every single command.**
+The compose project name is interpolated from `LOREFOLD_INSTANCE`, so a bare
+`docker compose -f ops/compose.m0.yml down` while you are thinking about Dave's
+stack stops **yours**. There is no prompt and no warning.
+
+**A different password per instance, always.** Reusing your own workspace
+password on a client instance hands that client your entire practice the moment
+they try it against port 3010.
+
+**Never nest one instance's data directory inside another's.** The cold backup
+tars the whole directory, so a nested instance ends up inside another client's
+archive. Keep them siblings: `athens-data/`, `athens-data-dave/`.
+
+**Fluree stays unpublished on every instance.** The rule in
+[section 14](#14-security-posture) is per-stack, not global. Adding a `ports:`
+entry for one client's fluree exposes that client's raw event log.
+
+### Backups are per-instance, and the scripts need telling
+
+Every script takes `LOREFOLD_ENV_FILE` and derives everything else from it:
+
+```bash
+LOREFOLD_ENV_FILE=ops/dave.env ops/backup/backup.sh hot
+LOREFOLD_ENV_FILE=ops/dave.env ops/backup/backup.sh verify
+LOREFOLD_ENV_FILE=ops/dave.env ops/backup/offhost.sh push
+```
+
+Cold archives go to `ops/backup/archives/<instance>/` and are named
+`athens-data-<instance>-<date>.tar.gz`. Off-host pushes go to
+`$LOREFOLD_OFFHOST_DEST/<instance>/`. Both of those are load-bearing rather
+than tidy: every instance's hot export is named `backup-<date>.edn`, so a
+shared flat destination would have each night's push overwrite the last one to
+run — one client's ledger silently replaced by another's, under the right
+filename with a fresh timestamp.
+
+On macOS, a second instance means a **second pair of LaunchAgents** with
+`LOREFOLD_ENV_FILE` in their `EnvironmentVariables` dict, not a loop inside one
+job — see [`macos/README.md`](macos/README.md).
+
+### Migrating an existing single-instance deployment
+
+Nothing about the running stack changes: every new variable defaults to what
+M0 has always used, so `docker compose -f ops/compose.m0.yml up -d` with no
+env changes produces the same project name, the same port and the same data
+directory. Containers are not recreated.
+
+Two directories move, once, because their contents are now instance-scoped:
+
+```bash
+# cold archives
+mkdir -p ops/backup/archives/m0
+mv ops/backup/archives/athens-data-*.tar.gz ops/backup/archives/m0/ 2>/dev/null
+
+# off-host copies, at whatever LOREFOLD_OFFHOST_DEST points to
+mkdir -p "$DEST/m0" && mv "$DEST"/backup-*.edn "$DEST"/athens-data-*.tar.gz "$DEST/m0/" 2>/dev/null
+```
+
+Skip the move and nothing breaks or is lost — the old files stay valid restore
+inputs, `restore.md` reads whatever file you point it at. They simply stop
+being listed by `verify` and stop being pruned, so they accumulate.
+
+---

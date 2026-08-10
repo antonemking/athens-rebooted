@@ -12,9 +12,14 @@
 # would just fail it again. So we wait for the daemon, then act.
 #
 # Configuration (environment, all optional):
+#   LOREFOLD_ENV_FILE     which stack to bring up           (default: <repo>/ops/.env)
 #   DOCKER_WAIT_SECONDS   how long to wait for the daemon   (default: 300)
 #   HEALTH_WAIT_SECONDS   how long to wait for athens       (default: 300)
 #   COMPOSE_FILE_M0       compose file                      (default: <repo>/ops/compose.m0.yml)
+#
+# One instance per invocation. To bring up a client channel instance as well,
+# install a second LaunchAgent with LOREFOLD_ENV_FILE set in its
+# EnvironmentVariables dict — see ops/macos/README.md.
 
 set -euo pipefail
 
@@ -22,8 +27,15 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 COMPOSE_FILE_M0="${COMPOSE_FILE_M0:-${REPO_ROOT}/ops/compose.m0.yml}"
+ENV_FILE="${LOREFOLD_ENV_FILE:-${REPO_ROOT}/ops/.env}"
 DOCKER_WAIT_SECONDS="${DOCKER_WAIT_SECONDS:-300}"
 HEALTH_WAIT_SECONDS="${HEALTH_WAIT_SECONDS:-300}"
+
+# --env-file must precede -f, and it REPLACES ops/.env rather than merging.
+# Passing it on every call is what keeps this script pointed at one stack: the
+# compose project name is interpolated from LOREFOLD_INSTANCE, so a bare
+# `docker compose -f ...` here would act on the default instance instead.
+compose() { docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE_M0}" "$@"; }
 
 # launchd hands a job a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), which does
 # not include the Docker CLI or Homebrew. Add both Intel and Apple-Silicon
@@ -57,19 +69,21 @@ log "docker daemon ready after ${waited}s"
 # ---------------------------------------------------------------------------
 # Better to have no graph than a graph on the shared password that ships in the
 # example file — this port is reachable from wherever ATHENS_BIND_ADDR points.
-ENV_FILE="${REPO_ROOT}/ops/.env"
 if [ ! -f "${ENV_FILE}" ]; then
-  die "no ops/.env — copy ops/.env.example and set a real ATHENS_PASSWORD first"
+  die "no env file at ${ENV_FILE} — copy ops/.env.example (or ops/instance.env.example) and set a real ATHENS_PASSWORD first"
 fi
 if grep -qE '^ATHENS_PASSWORD=(CHANGE-ME)?[[:space:]]*$' "${ENV_FILE}"; then
-  die "ATHENS_PASSWORD is unset or still CHANGE-ME in ops/.env — refusing to start"
+  die "ATHENS_PASSWORD is unset or still CHANGE-ME in ${ENV_FILE} — refusing to start"
 fi
 
 # ---------------------------------------------------------------------------
 # Up
 # ---------------------------------------------------------------------------
-log "bringing up the stack"
-docker compose -f "${COMPOSE_FILE_M0}" up -d
+LOREFOLD_INSTANCE="$(sed -n 's/^[[:space:]]*LOREFOLD_INSTANCE=//p' "${ENV_FILE}" | tail -1)"
+LOREFOLD_INSTANCE="${LOREFOLD_INSTANCE:-m0}"
+
+log "bringing up the '${LOREFOLD_INSTANCE}' stack (${ENV_FILE})"
+compose up -d
 
 # Health-check against whatever interface the port was actually published on.
 # With ATHENS_BIND_ADDR set to the tailnet address — which is what LF-8 asks for
@@ -82,7 +96,13 @@ case "${BIND_ADDR}" in
   *)          HEALTH_HOST="${BIND_ADDR}" ;;
 esac
 
-HEALTH_URL="http://${HEALTH_HOST}:3010/health-check"
+# The container always listens on 3010; LOREFOLD_PORT is the host side. A
+# hardcoded 3010 here would health-check the default workspace and report a
+# client instance on 3011 as healthy when it is not running at all.
+LOREFOLD_PORT="$(sed -n 's/^[[:space:]]*LOREFOLD_PORT=//p' "${ENV_FILE}" | tail -1)"
+LOREFOLD_PORT="${LOREFOLD_PORT:-3010}"
+
+HEALTH_URL="http://${HEALTH_HOST}:${LOREFOLD_PORT}/health-check"
 
 # wait_for_health <seconds> — 0 if athens answers within the budget, 1 if not.
 wait_for_health() {
@@ -102,7 +122,7 @@ wait_for_health() {
 # `up -d` returns as soon as the containers are created; athens waits on
 # fluree's health check, and fluree's first boot can take two to three minutes.
 # Report the real state rather than implying success.
-log "waiting for the athens health check on ${HEALTH_HOST}:3010"
+log "waiting for the athens health check on ${HEALTH_HOST}:${LOREFOLD_PORT}"
 if wait_for_health "${HEALTH_WAIT_SECONDS}"; then
   log "stack is up and healthy"
   exit 0
@@ -127,15 +147,15 @@ fi
 # once fluree is genuinely healthy — otherwise this just loops the same race.
 log "athens did not answer; checking fluree before recreating it"
 
-FLUREE_HEALTH="$(docker compose -f "${COMPOSE_FILE_M0}" ps fluree --format '{{.Health}}' 2>/dev/null | tail -1)"
+FLUREE_HEALTH="$(compose ps fluree --format '{{.Health}}' 2>/dev/null | tail -1)"
 if [ "${FLUREE_HEALTH}" != "healthy" ]; then
   log "WARNING: athens is down and fluree is '${FLUREE_HEALTH:-unknown}', not healthy."
-  log "         Recreating athens would not help. Check: docker compose -f ${COMPOSE_FILE_M0} logs fluree"
+  log "         Recreating athens would not help. Check: docker compose --env-file ${ENV_FILE} -f ${COMPOSE_FILE_M0} logs fluree"
   exit 0
 fi
 
 log "fluree is healthy, so this looks like the startup race — recreating athens once"
-docker compose -f "${COMPOSE_FILE_M0}" up -d --force-recreate athens
+compose up -d --force-recreate athens
 
 if wait_for_health "${HEALTH_WAIT_SECONDS}"; then
   log "stack is up and healthy after recreating athens"
@@ -143,4 +163,4 @@ if wait_for_health "${HEALTH_WAIT_SECONDS}"; then
 fi
 
 log "WARNING: athens is still not healthy after being recreated."
-log "         Check: docker compose -f ${COMPOSE_FILE_M0} logs athens"
+log "         Check: docker compose --env-file ${ENV_FILE} -f ${COMPOSE_FILE_M0} logs athens"

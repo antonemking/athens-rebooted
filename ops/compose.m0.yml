@@ -11,8 +11,30 @@
 # directory is ops/, so ops/.env is the env file. ops/.env is gitignored.
 #
 # See ops/RUNBOOK.md for the full boot, connect, smoke-test and backup procedure.
+#
+# ---------------------------------------------------------------------------
+# MORE THAN ONE INSTANCE ON ONE HOST
+# ---------------------------------------------------------------------------
+# There is no multi-tenancy: one graph per server process, and no per-page
+# permissions. Isolation between workspaces is *a second stack*, not a setting.
+# See ops/RUNBOOK.md section 18 and doc/client-channel-model.md.
+#
+# Every knob below defaults to exactly what the single-instance M0 stack has
+# always used, so an existing deployment is unaffected by this file changing.
+# A second instance overrides three of them in its own env file:
+#
+#   docker compose --env-file ops/dave.env -f ops/compose.m0.yml up -d
+#
+# TRAP: `--env-file` REPLACES ops/.env, it does not merge with it. A per-
+# instance env file must therefore be complete — start from
+# ops/instance.env.example, not from a two-line fragment.
+#
+# TRAP: the project name is interpolated from LOREFOLD_INSTANCE, so EVERY
+# later command needs the same `--env-file` or it silently targets the default
+# instance. `docker compose -f ops/compose.m0.yml down` run against Dave's
+# stack stops YOURS.
 
-name: lorefold-m0
+name: lorefold-${LOREFOLD_INSTANCE:-m0}
 
 services:
   athens:
@@ -30,10 +52,23 @@ services:
       # permissions: anything that can reach this port can read and write the
       # whole graph. Set ATHENS_BIND_ADDR=127.0.0.1 in ops/.env for a
       # local-only stack.
-      - "${ATHENS_BIND_ADDR:-0.0.0.0}:3010:3010"
+      #
+      # LOREFOLD_PORT is the HOST port only; the container always listens on
+      # 3010. A second instance takes 3011, a third 3012, and so on.
+      - "${ATHENS_BIND_ADDR:-0.0.0.0}:${LOREFOLD_PORT:-3010}:3010"
     volumes:
-      - ../athens-data/logs:/srv/athens/logs
-      - ../athens-data/datascript:/srv/athens/datascript
+      # LOREFOLD_DATA_DIR is resolved RELATIVE TO THIS FILE'S DIRECTORY (ops/),
+      # because that is how compose resolves relative bind mounts and there is
+      # no way to make it relative to the repo root instead. The backup scripts
+      # deliberately use the same rule so there is one answer, not two.
+      #
+      # NEVER nest one instance's data directory inside another's. The cold
+      # backup tars the whole directory, so a nested instance would end up
+      # inside another client's archive — which is exactly the isolation this
+      # is here to provide. Keep them siblings: ../athens-data,
+      # ../athens-data-dave, ../athens-data-acme.
+      - ${LOREFOLD_DATA_DIR:-../athens-data}/logs:/srv/athens/logs
+      - ${LOREFOLD_DATA_DIR:-../athens-data}/datascript:/srv/athens/datascript
     environment:
       # ---------------------------------------------------------------------
       # EDN-in-YAML quoting trap
@@ -79,7 +114,7 @@ services:
     # To inspect it during debugging use an ephemeral port-forward instead:
     #   docker compose -f ops/compose.m0.yml exec fluree ...
     volumes:
-      - ../athens-data/fluree:/var/lib/fluree
+      - ${LOREFOLD_DATA_DIR:-../athens-data}/fluree:/var/lib/fluree
     environment:
       TZ: ${TZ:-America/New_York}
     healthcheck:

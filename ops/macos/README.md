@@ -155,6 +155,64 @@ Then the one that matters: **restore into a scratch stack and confirm your
 decisions come back.** `../backup/restore.md` has the procedure and its sharp
 edges. A backup you have never restored is not a backup.
 
+## 7. A second instance, for a client channel
+
+Provision it first — [`../RUNBOOK.md` §18](../RUNBOOK.md) — then give it its own
+pair of agents. Both scripts take `LOREFOLD_ENV_FILE` and derive the instance,
+data directory, port, archive directory and off-host subdirectory from it.
+
+Copy each plist to a new label and add the env file to it:
+
+```bash
+INSTANCE=dave
+
+for job in stack backup; do
+  sed -e "s|__REPO_ROOT__|$PWD|g" \
+      -e "s|com.lorewood.lorefold.${job}|com.lorewood.lorefold.${INSTANCE}.${job}|g" \
+      -e "s|launchd-${job}.log|launchd-${INSTANCE}-${job}.log|g" \
+      ops/macos/com.lorewood.lorefold.${job}.plist \
+    > ~/Library/LaunchAgents/com.lorewood.lorefold.${INSTANCE}.${job}.plist
+done
+```
+
+Then add this dict to each of the two new files, inside the top-level `<dict>`:
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+  <key>LOREFOLD_ENV_FILE</key>
+  <string>__REPO_ROOT__/ops/dave.env</string>
+</dict>
+```
+
+substituting the real repo path — launchd does no variable expansion, so a
+literal `~` or `$HOME` silently fails, exactly as for `__REPO_ROOT__`. Then
+`launchctl bootstrap` both, as in [section 4](#4-install-the-agents).
+
+Three things to get right:
+
+- **Separate log paths**, which the `sed` above handles. Two jobs writing one
+  log file interleave and you cannot tell which instance failed.
+- **Stagger the backup hour.** A cold archive stops the stack it is archiving;
+  two jobs at 02:30 both stop *their own* stack, which is fine, but they compete
+  for disk and CPU on the same machine. Change `StartCalendarInterval` in the
+  copy.
+- **Separate jobs, not a loop inside one.** A run that half-fails on one client
+  should not mark the other client's backup failed — `launchctl print` shows one
+  last-exit status per job, and a shared one tells you nothing about which graph
+  is unprotected.
+
+Verify each independently:
+
+```bash
+LOREFOLD_ENV_FILE=ops/dave.env ops/backup/backup.sh verify
+LOREFOLD_ENV_FILE=ops/dave.env ops/backup/offhost.sh verify
+```
+
+Both must report `instance : dave` and paths under `dave`. If either says `m0`,
+the env file is not reaching the script and you are about to back up the wrong
+graph under the right-looking filename.
+
 ## Uninstall
 
 ```bash
@@ -162,6 +220,9 @@ launchctl bootout gui/$(id -u)/com.lorewood.lorefold.stack
 launchctl bootout gui/$(id -u)/com.lorewood.lorefold.backup
 rm ~/Library/LaunchAgents/com.lorewood.lorefold.{stack,backup}.plist
 ```
+
+Per-instance agents uninstall the same way under their own labels, e.g.
+`com.lorewood.lorefold.dave.stack`.
 
 Containers keep running; stop them with
 `docker compose -f ops/compose.m0.yml down`. That leaves `athens-data/` alone —

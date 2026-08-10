@@ -127,6 +127,34 @@ password on that line lands in your shell history.
 Verify with `claude mcp list`, which should show `lorefold` connected, and then
 ask Claude to read today's note.
 
+### One registration per instance
+
+Each Lorefold instance is a separate server with its own graph, port and
+password — that is the whole of the isolation model, see
+`doc/client-channel-model.md`. The bridge holds one instance's config per
+process, so reaching two graphs means registering it twice under different
+names:
+
+```bash
+# your workspace: every client, the whole decision ledger
+claude mcp add lorefold        --env LOREFOLD_URL=http://100.92.14.3:3010 ...
+
+# a client channel: the pages you and that client pass back and forth
+claude mcp add lorefold-dave   --env LOREFOLD_URL=http://100.92.14.3:3011 ...
+```
+
+Give each its own `LOREFOLD_PASSWORD` — they are different graphs and reusing
+the workspace password on a client instance would hand that client the whole
+practice.
+
+The names matter more than they look. Both registrations expose identically
+named tools, so the only thing telling an agent which graph it is writing to is
+which server it picked. **`lorefold_decision_record` belongs on the workspace**;
+a decision recorded into a channel lands in a graph with no ledger, no index and
+no backlinks to anything else, and append-only means it cannot be moved
+afterwards. Name the client registration after the client, and say which one you
+mean when you ask for a write.
+
 ## The markdown dialect is narrow, on purpose
 
 Blocks are written and read as an indented `- ` outline, two spaces per level:

@@ -46,6 +46,9 @@ docker-compose.yml.bk
 
 # environment files with real secrets (ops/.env.example is the committed template)
 .env
+# per-instance env files: ops/dave.env, ops/acme.env. Each holds that client's
+# graph password. The *.example templates do not match this pattern.
+/ops/*.env
 
 # cold backup tarballs
 /ops/backup/archives/
@@ -53,6 +56,9 @@ docker-compose.yml.bk
 # dev mode server data
 athens-data/*
 !athens-data/README.md
+# per-instance graph data: athens-data-dave/, athens-data-acme/. These are
+# client graphs — never let one reach a commit.
+/athens-data-*/
 
 # java AOT classes
 classes/*

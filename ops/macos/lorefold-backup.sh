@@ -15,11 +15,23 @@
 # the off-host copy of a perfectly good hot export. Failures are logged loudly
 # and the exit status reflects whether anything failed, so `launchctl print`
 # shows a non-zero last exit rather than a silent green light.
+#
+# Configuration:
+#   LOREFOLD_ENV_FILE   which stack to back up (default: <repo>/ops/.env)
+#
+# One instance per invocation, and it is exported so every child script agrees
+# on which graph this run is about. Backing up a second instance means a second
+# LaunchAgent with LOREFOLD_ENV_FILE set — not a loop in here, because a single
+# job that half-fails on one client should not mark the other's backup failed.
+# See ops/macos/README.md.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+
+LOREFOLD_ENV_FILE="${LOREFOLD_ENV_FILE:-${REPO_ROOT}/ops/.env}"
+export LOREFOLD_ENV_FILE
 
 PATH="/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin:${PATH}"
 export PATH
@@ -39,7 +51,7 @@ run_step() {
   fi
 }
 
-log "==== nightly run starting"
+log "==== nightly run starting (env file: ${LOREFOLD_ENV_FILE})"
 
 # The hot export needs a running stack. If the machine was off and Docker has
 # not come back yet, say so rather than emitting a confusing save-CLI error.
