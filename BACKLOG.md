@@ -171,6 +171,16 @@ Document every breakpoint hit, in order.
 
 *Acceptance:* a jar that boots against a running Fluree; vendored m2 archived; breakpoints written up in `ops/RUNBOOK.md`.
 
+### LF-39 · Make the `add-event!` write timeout configurable · 1
+`add-event!` (`src/clj/athens/self_hosted/event_log.clj:131`) allows 5 000 ms per transaction and retries three times; both callers use the 3-arity, so no configuration reaches those numbers. Under qemu emulation that budget is never met, which makes every write fail on an arm64 host — `fluree/ledger:1.0.0-beta17` is published amd64-only, so this is every Apple-Silicon machine. Symptom and workarounds are in `ops/RUNBOOK.md` §13; hit for real in `doc/lf38-verification.md`.
+
+Read the timeout and backoff from config with the present values as defaults. Do not silently raise them — a write that takes longer than five seconds against a *native* ledger is a signal worth keeping.
+*Depends on LF-18 (the fix is a source change, so it needs a build we own).*
+
+Not a gate blocker: LF-8 already puts anything real on an amd64 always-on host, which is where the two weeks of recording should happen regardless. This is about making a laptop a usable dev environment.
+
+*Acceptance:* timeout and backoff settable via `CONFIG_EDN`; defaults unchanged at 5 000/1 000 ms; a write succeeds on an arm64 host with the timeout raised.
+
 ### LF-19 · Build the frontend from source · 3
 `node:16-bullseye` plus temurin 17 (shadow-cljs runs on the JVM and resolves `deps.edn`). `ELECTRON_SKIP_BINARY_DOWNLOAD=1`, then `yarn components && shadow-cljs release app`. Never `yarn prod`.
 *Depends on LF-16, LF-17.*

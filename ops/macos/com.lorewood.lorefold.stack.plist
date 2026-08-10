@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Lorefold M0 — bring the stack up at login.
+
+  REPLACE __REPO_ROOT__ with the absolute path to your clone before installing,
+  e.g. /Users/toneking/src/athens-rebooted. launchd does no variable expansion:
+  a literal ~ or $HOME here silently fails.
+
+  Install:
+    sed "s|__REPO_ROOT__|$PWD|g" ops/macos/com.lorewood.lorefold.stack.plist \
+      > ~/Library/LaunchAgents/com.lorewood.lorefold.stack.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lorewood.lorefold.stack.plist
+
+  The containers themselves carry `restart: always`, so Docker restarts them
+  after a crash. This agent covers the case Docker cannot: the whole machine
+  rebooted, or Docker Desktop was quit and reopened.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lorewood.lorefold.stack</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO_ROOT__/ops/macos/lorefold-up.sh</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Not KeepAlive: this script exits once the stack is healthy, and a
+       KeepAlive job that exits gets relaunched forever. Docker's own
+       `restart: always` is what keeps the containers running. -->
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO_ROOT__</string>
+
+  <key>StandardOutPath</key>
+  <string>__REPO_ROOT__/athens-data/logs/launchd-stack.log</string>
+  <key>StandardErrorPath</key>
+  <string>__REPO_ROOT__/athens-data/logs/launchd-stack.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
