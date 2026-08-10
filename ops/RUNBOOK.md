@@ -319,6 +319,31 @@ Notes that will save you time:
   be a Clojure keyword; a JSON string reaches the resolver as `"first"` and
   fails malli validation with `500 Invalid event`. Use EDN if you need it,
   otherwise every write appends last.
+- **`block/properties` cannot be written over JSON at all.** Same root cause,
+  one level deeper: muuntaja keywordizes the property key, but `enhance-props`
+  uses it as a *page title string* when positioning the property block. Every
+  such write dies with
+  `500 class clojure.lang.Keyword cannot be cast to class java.lang.Number`,
+  which is thrown from inside malli's error formatter and names neither the
+  field nor the cause. Send properties as EDN:
+
+  ```bash
+  curl -f -u claude:"$ATHENS_PASSWORD" \
+    -H "Content-Type: application/edn" -H "Accept: application/json" \
+    -X POST http://localhost:3010/api/path/write \
+    -d '{:path [{:page/query "@today"}]
+         :data [{:block/string "a decision"
+                 :block/properties {":decision/status" {:block/string "accepted"}}}]}'
+  ```
+
+  Only the *request* has to be EDN — `Accept: application/json` still returns
+  JSON, so you need an EDN writer and no EDN reader. Filed as LF-29b (3); see
+  `doc/decision-object-model.md` §8.2 for the full mechanism.
+- **Past daily notes are reachable by title, and it is safe.** There is no
+  `@yesterday`, but writing to `{"page/title":"August 09, 2026"}` lands on the
+  existing page rather than creating a duplicate: `:page/new` derives a
+  date-shaped title back to the canonical `MM-dd-yyyy` uid. This only holds
+  with the exact `LLLL dd, yyyy` zero-padded format.
 - Creating an **empty page** takes a write whose data is the page itself:
   `-d '{"path":[{"page/title":"X"}],"data":[{"page/title":"X"}]}'`. `:page/new`
   is idempotent, so this is safe to repeat.
@@ -327,7 +352,8 @@ Notes that will save you time:
   are `{:block/string}` and `{:block/key}`. Anything else is a 500.
 
 The above was established against this stack on 2026-08-10 while building the
-MCP bridge (LF-9/LF-10); see `tools/lorefold-mcp/README.md`.
+MCP bridge (LF-9/LF-10) and the decision tools (LF-38); see
+`tools/lorefold-mcp/README.md`.
 
 ---
 

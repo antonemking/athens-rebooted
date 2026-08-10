@@ -222,6 +222,45 @@ describe('writePath', () => {
     await expect(client.writePath([{ pageTitle: 'p' }], [])).rejects.toThrow(LorefoldProtocolError);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  /* ---------------------------------------------------------------- *
+   * Properties force EDN (LF-38). JSON cannot carry them at all: muuntaja
+   * keywordizes the property key, which `bfs/enhance-props` needs as a page
+   * title string, and the request dies with a 500 ClassCastException from
+   * malli's own error formatter.
+   * ---------------------------------------------------------------- */
+
+  it('sends EDN, not JSON, when the data carries properties', async () => {
+    const fetchImpl = vi.fn<FetchLike>(async () => new Response('{"page/title":"p"}', { status: 200 }));
+    const client = new LorefoldClient(config, { fetchImpl });
+
+    await client.writePath(
+      [{ pageQuery: '@today' }],
+      [{ string: 'a decision', properties: { ':decision/status': { string: 'accepted' } } }],
+    );
+
+    const [, init] = fetchImpl.mock.calls[0]!;
+    const headers = init.headers as Record<string, string>;
+    expect(headers['Content-Type']).toBe('application/edn');
+    // The response is still negotiated as JSON, so nothing has to read EDN.
+    expect(headers['Accept']).toBe('application/json');
+    expect(init.body).toBe(
+      '{:path [{:page/query "@today"}], ' +
+        ':data [{:block/string "a decision", ' +
+        ':block/properties {":decision/status" {:block/string "accepted"}}}]}',
+    );
+  });
+
+  it('still sends JSON when there are no properties', async () => {
+    const fetchImpl = vi.fn<FetchLike>(async () => new Response('{"page/title":"p"}', { status: 200 }));
+    const client = new LorefoldClient(config, { fetchImpl });
+
+    await client.writePath([{ pageTitle: 'p' }], [{ string: 'plain' }]);
+
+    const [, init] = fetchImpl.mock.calls[0]!;
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect(JSON.parse(init.body as string)).toHaveProperty('data');
+  });
 });
 
 /* ------------------------------------------------------------------ *

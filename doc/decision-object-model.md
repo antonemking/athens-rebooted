@@ -1,7 +1,13 @@
 # The decision object model (LF-37)
 
-**Status:** Draft for review. Specification only — no implementation.
+**Status:** Validated against a running server and implemented. See §11.
 **Implements:** `BACKLOG.md` → LF-37. Consumed by LF-38 (`lorefold_decision_record`) and LF-33 (MCP v1 query tools).
+
+> **Correction, 2026-08-10 (LF-38).** §8 said this payload is sent as JSON. It
+> cannot be: **`block/properties` is unwritable over JSON**, and every example
+> in this document originally failed with a 500 on the first attempt. The
+> *shape* below is correct and verified; the *encoding* has to be EDN. §8 now
+> carries both forms and the reason. Nothing else in this spec changed.
 
 This is the thing that makes Lorefold a decision intelligence platform rather than a notes tool. Everything else in the roadmap is plumbing that serves this.
 
@@ -91,7 +97,15 @@ The second is free and automatic. It is also the answer to "how did our thinking
 
 ## 8. Worked example
 
-Exactly what LF-38 sends to `POST /api/path/write` (JSON; muuntaja renders namespaced keywords as `"block/string"`-style strings):
+### 8.1 The shape
+
+This is the internal representation LF-38 writes. It is verified against the
+live M0 stack: sent as EDN it produces exactly the graph §3 describes, with the
+properties under the right keys, `alternatives` and `evidence` as children, and
+live page links in `context` and `participants`.
+
+Shown here in JSON because it is easier to read, and because JSON is what the
+rest of the API takes — but see §8.2 before sending it.
 
 ```json
 {
@@ -119,6 +133,50 @@ Exactly what LF-38 sends to `POST /api/path/write` (JSON; muuntaja renders names
 ```
 
 Note the shape of a multi-value property: an empty `block/string` with `block/children`. The property block is the container; each child is one value.
+
+Note also which properties are *not* multi-value. `context`, `participants` and `supersedes` take several values from the caller but render as **several links in one string** — `"[[Acme Corp]] [[Billing migration]]"`, `"((abc123456)) ((def789012))"`. That is what the example shows, and it is load-bearing: the superseded-by query in §9 matches `[?p :block/refs ?old]` on the **property block itself**, which only holds while the ref lives in that block's own string. Move those to children and the derived reverse direction silently stops working.
+
+### 8.2 Send it as EDN. JSON does not work.
+
+**A write carrying `block/properties` must use `Content-Type: application/edn`.** Over JSON it fails, always, with:
+
+```
+500 class clojure.lang.Keyword cannot be cast to class java.lang.Number
+```
+
+The mechanism, established against the live stack on 2026-08-10:
+
+1. muuntaja keywordizes JSON object keys, so `":decision/status"` arrives as a Clojure **keyword** rather than a string.
+2. `bfs/enhance-props` (`src/cljc/athens/common_events/bfs.cljc:41-45`) takes that key and uses it as a **page title**, building the property block's position as `{:relation {:page/title <key>}}`. A page title must be a string.
+3. The resulting event fails malli validation — and malli's *error formatter* then throws while describing the failure, treating the keyword as a path index. The cast error is what reaches the client, so the response names neither the field nor the real cause.
+
+Filed as `BACKLOG.md` → LF-29b (3). Until it is fixed, EDN is not a workaround to be tidied away later — it is the only way to write a property at all. The same payload in EDN, which is what the bridge actually sends:
+
+```clojure
+{:path [{:page/query "@today"}]
+ :data [{:block/string "We will replace Fluree with SQLite for the event log"
+         :block/properties
+         {":entity/type"           {:block/string "[[lorefold/decision]]"}
+          ":decision/status"       {:block/string "accepted"}
+          ":decision/date"         {:block/string "2026-08-09"}
+          ":decision/context"      {:block/string "[[Lorefold]]"}
+          ":decision/participants" {:block/string "[[Tone]]"}
+          ":decision/question"     {:block/string "What backs the append-only event log now that Fluree v1 is abandoned?"}
+          ":decision/rationale"    {:block/string "The storage seam is four functions over (uuid, EDN-string) pairs in total order."}
+          ":decision/alternatives" {:block/string ""
+                                    :block/children [{:block/string "Stay on fluree/ledger:1.0.0-beta17 — rejected: abandoned beta"}
+                                                     {:block/string "Postgres — rejected: a second container for a single-writer log"}]}
+          ":decision/evidence"     {:block/string ""
+                                    :block/children [{:block/string "https://github.com/antonemking/athens-rebooted/blob/main/REBOOT.md#7-technology-verdicts"}]}}}]}
+```
+
+The distinction JSON cannot express is visible here: the keys of a *node* map are keywords, the keys of the *properties* map are strings. Note that only the request has to be EDN — `Accept: application/json` still returns JSON, so a client needs an EDN writer and no EDN reader.
+
+### 8.3 Filing a backdated decision
+
+`:decision/date` is when the decision was *made*, and the block belongs on that day's daily note — which is usually not today. There is no `@yesterday`; the only query the server understands is the literal `"@today"`.
+
+So a same-day decision is written to `{:page/query "@today"}`, letting the server's clock decide, and a backdated one is written to `{:page/title "August 09, 2026"}`. Addressing a past day by title is safe: the `:page/new` resolver derives a date-shaped title back to the canonical daily uid (`resolver/atomic.cljc:151`), so the page it creates is `08-09-2026` — the same page the calendar shows, not a duplicate. Verified. The title format has to be exactly `LLLL dd, yyyy` with a zero-padded day for that to hold.
 
 ## 9. Datalog
 
@@ -208,6 +266,29 @@ Written against the real schema. A property block `?p` has `:block/property-of` 
 3. **Participants as page links** creates a person page per collaborator. Valuable ("every decision Sarah was in"), but it puts client staff names in the graph — worth confirming against the data-discipline rule in `REBOOT.md` §9 before a client workspace exists.
 4. **Decision granularity.** No guidance yet on what is too small to record. Likely answer after two weeks of live use, not before.
 
+### Raised by the first real recording (LF-38), not resolved here
+
+Recording the LF-8 deployment-target decision — a genuine decision made under real constraints, written up in `ops/RUNBOOK.md` §15 — surfaced three places where the model does not quite fit a real decision. Stated as questions for the owner, deliberately not answered:
+
+5. **`:decision/review-on` is a date, but real revisit conditions are events.** LF-8 says "revisit when M1 ships (TLS + telemetry strip), or a client workspace is provisioned — whichever comes first". There is no date that means that, and inventing one throws away the actual trigger. The recording put the trigger in the rationale prose, which preserves it for a human reader and hides it from every query. Options: allow `review-on` to hold a free-text trigger; add a separate `:decision/review-when`; or accept that triggers live in prose. This is the sharpest of the three — the field as specified could not express the real thing.
+
+6. **A decision can create an obligation, and there is nowhere to put it.** LF-8 ends "follow-on this creates: pick the off-host backup target on the tailnet and wire it into the nightly job. Until that exists, backups are still single-disk and this decision is only half-realised." That is not an alternative, not evidence, and not a separate decision — it is unfinished work the decision produced. Adding a field for it walks toward the task tracker §4 deliberately refuses to become, so the tension is real and worth deciding on purpose rather than by omission.
+
+7. **"The statement is the title" strains at length.** LF-8's statement is a full paragraph, because the decision genuinely has several inseparable parts (tailnet-only, bind to the tailnet interface, most always-on host, no VPS until M1). It records fine and reads fine in the block, but it is a poor title anywhere a decision gets listed. Either the model wants a short statement plus a longer `:decision/detail`, or listings need to truncate — currently they truncate nowhere.
+
 ## 11. Acceptance
 
-Per LF-37: this spec, plus validation that the §8 example produces the intended graph through `internal-representation->atomic-ops`. That validation runs as part of LF-38, since it needs a live stack (`ops/RUNBOOK.md` §9) — the shape here is derived from the schema and the tasks precedent, and is unverified against a running server until then.
+Per LF-37: this spec, plus validation that the §8 example produces the intended graph through `internal-representation->atomic-ops`. That validation needed a live stack, so it ran as part of LF-38 on 2026-08-10 against the M0 stack (`ops/RUNBOOK.md` §9).
+
+**Result: the shape is correct; the encoding in §8 was not.**
+
+Confirmed against the running server:
+
+- The §8 payload produces the intended graph — every property under its own key, `alternatives` and `evidence` as one child per value, `context` and `participants` as live page links that created the pages they name.
+- The free index of §2 works. `lorefold/decision` and `Lorewood Labs` both exist as pages although no write ever named them; they exist *because* `[[lorefold/decision]]` and `[[Lorewood Labs]]` were parsed as page links from property strings, which is the same mechanism that produces the linked references. Seeing those references rendered in the browser is still a human check.
+- Backdated filing lands on the existing daily page with the canonical uid (`08-09-2026`), not a duplicate — see §8.3.
+- A full round trip survives: every property written was read back unchanged through `/api/path/read`.
+
+Corrected as a result: §8 now specifies EDN and explains why (§8.2), and §8.3 documents backdated filing, which the original spec did not address.
+
+Not verified, because no API exposes it: the datalog in §9 has still never been executed. It is written against the real schema, but the REST API returns internal representations rather than query results, so nothing in v0 can run it. It becomes testable with the query endpoints in M2b (LF-29).

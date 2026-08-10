@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import { dailyNoteTitle, dailyNoteUid, timeZoneMismatchWarning } from '../src/dates.js';
+import {
+  dailyNoteTitle,
+  dailyNoteTitleForIso,
+  dailyNoteUid,
+  isIsoDate,
+  isoDateIn,
+  isoDateRange,
+  isoDaysBefore,
+  timeZoneMismatchWarning,
+} from '../src/dates.js';
 
 const NY = 'America/New_York';
 const TOKYO = 'Asia/Tokyo';
@@ -98,5 +107,85 @@ describe('timeZoneMismatchWarning', () => {
     expect(warning).toContain('August 10, 2026');
     expect(warning).toContain('LOREFOLD_TZ');
     expect(warning).toContain('ops/.env');
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * ISO dates (LF-38). A decision is filed on the daily note of the day it was
+ * MADE, so the bridge has to go from YYYY-MM-DD to a page title — something
+ * `@today` cannot do.
+ * ------------------------------------------------------------------ */
+
+describe('isIsoDate', () => {
+  it('accepts a real calendar date', () => {
+    expect(isIsoDate('2026-08-09')).toBe(true);
+    expect(isIsoDate('2024-02-29')).toBe(true);
+  });
+
+  it('rejects the wrong shape', () => {
+    expect(isIsoDate('2026-8-9')).toBe(false);
+    expect(isIsoDate('09-08-2026')).toBe(false);
+    expect(isIsoDate('August 09, 2026')).toBe(false);
+    expect(isIsoDate('')).toBe(false);
+  });
+
+  it('rejects a date that does not exist, which Date.UTC would silently roll over', () => {
+    expect(isIsoDate('2026-02-30')).toBe(false);
+    expect(isIsoDate('2026-13-01')).toBe(false);
+    expect(isIsoDate('2025-02-29')).toBe(false);
+  });
+});
+
+describe('dailyNoteTitleForIso', () => {
+  it('produces the zero-padded title the server uses', () => {
+    expect(dailyNoteTitleForIso('2026-08-09')).toBe('August 09, 2026');
+    expect(dailyNoteTitleForIso('2026-12-31')).toBe('December 31, 2026');
+  });
+
+  it('does not shift the date with the host or configured timezone', () => {
+    // A calendar date has no timezone; treating it as one is how you file a
+    // decision on the wrong day.
+    expect(dailyNoteTitleForIso('2026-01-01')).toBe('January 01, 2026');
+  });
+
+  it('throws rather than inventing a title for a non-date', () => {
+    expect(() => dailyNoteTitleForIso('yesterday')).toThrow(RangeError);
+  });
+});
+
+describe('isoDateIn', () => {
+  it('reads the calendar date in the given zone', () => {
+    // 2026-08-11T02:00Z is still the 10th in New York and already the 11th in Tokyo.
+    const instant = new Date('2026-08-11T02:00:00Z');
+    expect(isoDateIn(instant, NY)).toBe('2026-08-10');
+    expect(isoDateIn(instant, TOKYO)).toBe('2026-08-11');
+    expect(isoDateIn(instant, UTC)).toBe('2026-08-11');
+  });
+});
+
+describe('isoDateRange', () => {
+  it('is inclusive at both ends', () => {
+    expect(isoDateRange('2026-08-08', '2026-08-10')).toEqual([
+      '2026-08-08',
+      '2026-08-09',
+      '2026-08-10',
+    ]);
+  });
+
+  it('handles a single day and crossing a month or year boundary', () => {
+    expect(isoDateRange('2026-08-10', '2026-08-10')).toEqual(['2026-08-10']);
+    expect(isoDateRange('2026-07-31', '2026-08-01')).toEqual(['2026-07-31', '2026-08-01']);
+    expect(isoDateRange('2025-12-31', '2026-01-01')).toEqual(['2025-12-31', '2026-01-01']);
+  });
+
+  it('is empty when the range is inverted, rather than looping forever', () => {
+    expect(isoDateRange('2026-08-10', '2026-08-01')).toEqual([]);
+  });
+});
+
+describe('isoDaysBefore', () => {
+  it('walks back across a month boundary', () => {
+    expect(isoDaysBefore('2026-08-10', 13)).toBe('2026-07-28');
+    expect(isoDaysBefore('2026-03-01', 1)).toBe('2026-02-28');
   });
 });
