@@ -305,6 +305,29 @@ Notes that will save you time:
   endpoint that does not exist yet (LF-30).
 - Set `-H "Content-Type: application/edn" -H "Accept: application/edn"` to
   speak EDN instead of JSON.
+- A read that resolves to **nothing** — a page that does not exist, or a
+  selector matching no child — answers **200 with an empty body**. Not 404, not
+  `null`. `curl -f` will not catch it; check the body length.
+- Errors are **plain text, not JSON**, and the text is the real reason:
+  `401 access denied`, `500 Cannot resolve title.` The server has no exception
+  middleware, so a rejected request arrives as a 500 carrying the message of
+  the thrown `ex-info`. Read the body before assuming the server is broken.
+- `"data":[]` on a write **crashes the request** with a `ClassCastException`
+  instead of failing cleanly (`api.clj` builds its `ex-info` with a vector
+  where a map belongs). Always send at least one block.
+- The optional `relation` key on `/write` is **unusable over JSON**. It has to
+  be a Clojure keyword; a JSON string reaches the resolver as `"first"` and
+  fails malli validation with `500 Invalid event`. Use EDN if you need it,
+  otherwise every write appends last.
+- Creating an **empty page** takes a write whose data is the page itself:
+  `-d '{"path":[{"page/title":"X"}],"data":[{"page/title":"X"}]}'`. `:page/new`
+  is idempotent, so this is safe to repeat.
+- The path grammar is closed. Roots are `{:page/title}`, `{:block/uid}` and
+  `{:page/query "@today"}` — that literal string and no other — and selectors
+  are `{:block/string}` and `{:block/key}`. Anything else is a 500.
+
+The above was established against this stack on 2026-08-10 while building the
+MCP bridge (LF-9/LF-10); see `tools/lorefold-mcp/README.md`.
 
 ---
 

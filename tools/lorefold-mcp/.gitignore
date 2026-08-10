@@ -1,0 +1,8 @@
+node_modules/
+dist/
+
+# Credentials reach this bridge through the environment only (LOREFOLD_URL,
+# LOREFOLD_USERNAME, LOREFOLD_PASSWORD). Nothing resembling a .env belongs
+# in the repository — see AGENTS.md guardrail 3.
+.env
+.env.*
