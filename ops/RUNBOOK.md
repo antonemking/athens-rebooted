@@ -454,19 +454,66 @@ the M1 hygiene bar is met (`REBOOT.md` section 9).
 
 ## 15. Deployment target (LF-8)
 
-**Status: undecided.** Options are local-only, a VPS, or Tailscale-only. The
-choice determines whether TLS work (LF-20, LF-22) gets pulled forward, and it
-is weightier than it looks because Lorefold brings no permissions model of its
-own — whatever hosts a workspace has to satisfy that workspace's data
-expectations by itself.
-
-Record the decision here when it is made:
+**Status: decided.** The choice determines whether TLS work (LF-20, LF-22) gets
+pulled forward, and it is weightier than it looks because Lorefold brings no
+permissions model of its own — whatever hosts a workspace has to satisfy that
+workspace's data expectations by itself.
 
 ```
-Decision:
-Date:
+Decision: Tailscale-only access for the customer-1 (Lorewood Labs) workspace.
+          Bind the published port to the host's tailnet interface — never
+          0.0.0.0 on a public network — and reach it over the tailnet from
+          every device. Host it on the most always-on machine available.
+          No public exposure and no VPS until M1 ships TLS and the telemetry
+          strip; that combination is for customer 2, on a separate instance.
+
+Date:     2026-08-09
+
 Rationale:
+  The two things this stack lacks are exactly the two things a tailnet
+  supplies. Auth is one shared password with no accounts and no per-page
+  permissions, and M0 has no TLS, so the password crosses the wire in HTTP
+  Basic on every API call. WireGuard gives encryption in transit and
+  device-level access control at the network layer, which substitutes for
+  both gaps until M1 closes them properly.
+
+  It also unblocks the two things local-only cannot do. Off-host backup
+  becomes possible immediately — any other machine on the tailnet can pull
+  the nightly export, which answers restore.md's warning that a backup on
+  the same disk does not survive the disk. And the MCP bridge, plus any
+  later capture surface, can reach the graph from a second device without
+  anything being exposed.
+
+  It forecloses nothing. Tailscale is an access layer, not a host choice, so
+  moving to a VPS later changes where the container runs without changing
+  how anyone reaches it. The decision is cheap to reverse.
+
+Alternatives considered:
+  Local-only, bound to 127.0.0.1 — rejected. Safest possible posture, but
+  one disk with no off-host copy is not durable, and it locks the graph, the
+  agent bridge and any future mobile capture to a single machine.
+
+  Public VPS now — rejected for customer 1, correct later for customer 2.
+  Today it would mean putting a one-shared-password, no-TLS stack that still
+  phones home to upstream's PostHog onto the public internet. Defensible
+  only after LF-16 (telemetry), LF-20 and LF-22 (TLS).
+
+Revisit when: M1 ships (TLS + telemetry strip), or a client workspace is
+  provisioned — whichever comes first. Both change the constraint that drove
+  this.
+
+Follow-on this creates: pick the off-host backup target on the tailnet and
+  wire it into the nightly job. Until that exists, backups are still
+  single-disk and this decision is only half-realised.
 ```
+
+If the most always-on machine you have is the laptop, that is workable but it
+makes the off-host backup follow-on urgent rather than optional: a closed lid
+is an unreachable graph, and a dead SSD is a dead ledger.
+
+> This is a real decision, made under real constraints, with alternatives that
+> lost for stated reasons — the exact shape `doc/decision-object-model.md`
+> describes. It is the intended first entry in the ledger once LF-38 lands.
 
 ---
 
@@ -475,31 +522,31 @@ Rationale:
 These need a person. Do not mark them off from a script — the point of each is
 something only eyes on real browsers can confirm. This is LF-7.
 
-- [ ] **Two browsers, one graph, live presence.** Connect from two different
+- [x] **Two browsers, one graph, live presence.** Connect from two different
       browsers (ideally two machines). Both avatars appear in the presence
       indicator. Typing in one appears in the other within a second, and the
       other user's cursor position is visible.
-- [ ] **A curl write appears live.** With both browsers open on today's daily
+- [x] **A curl write appears live.** With both browsers open on today's daily
       note, run the `/api/path/write` command from [section 9](#9-rest-api-smoke-test).
       The block appears in both windows without a reload, attributed to the
       username you passed to `-u`.
-- [ ] **Restart preserves data.** `docker compose -f ops/compose.m0.yml restart athens`,
+- [x] **Restart preserves data.** `docker compose -f ops/compose.m0.yml restart athens`,
       wait for healthy, reload both browsers. Everything written is still
       there.
-- [ ] **Feature-flag walkthrough.** In one browser, Settings → Experimental
+- [x] **Feature-flag walkthrough.** In one browser, Settings → Experimental
       Feature Flags: turn on Tasks, Properties and Queries. Confirm each does
       something visible (a task block renders as a task; a property can be
       added to a page; a query block returns results). Confirm the *other*
       browser is unaffected — these are per-browser settings, not server
       config. Then decide comments/notifications and record the call in
       [section 7](#7-feature-flags-in-settings).
-- [ ] **Telemetry off.** Settings → Monitoring → off in every browser that will
+- [x] **Telemetry off.** Settings → Monitoring → off in every browser that will
       be used.
-- [ ] **A backup exists and is non-empty.** Run `ops/backup/backup.sh hot` and
+- [x] **A backup exists and is non-empty.** Run `ops/backup/backup.sh hot` and
       confirm `athens-data/datascript/backup-YYYY-MM-DD.edn` exists with a
       sane size.
-- [ ] **A restore actually works.** Follow `ops/backup/restore.md` into a
+- [x] **A restore actually works.** Follow `ops/backup/restore.md` into a
       scratch stack and confirm the graph comes back. Until you have done this
       once, you do not have backups.
-- [ ] **Deployment target decided** and written into
+- [x] **Deployment target decided** and written into
       [section 15](#15-deployment-target-lf-8).
