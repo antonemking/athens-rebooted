@@ -463,6 +463,28 @@ healthy. Fluree's first boot takes two to three minutes.
 ledger. If it is still unhealthy after five minutes, check that
 `athens-data/fluree` is writable by the container.
 
+**Every write fails with `add-event! timed-out 3 times`, on an Apple-Silicon
+machine.** The stack boots, both containers report healthy, reads work — and
+every `/api/path/write` fails. `fluree/ledger:1.0.0-beta17` is published
+**amd64-only**, so on arm64 it runs under emulation (qemu, whether via Docker
+Desktop or colima) and each transaction misses the write path's deadline:
+`add-event!` (`src/clj/athens/self_hosted/event_log.clj:131`) allows 5 000 ms
+per attempt, retries three times with exponential backoff, then throws. Both
+callers use the 3-arity, so those defaults cannot be changed by configuration —
+only by building the server from source (filed as **LF-39**).
+
+Until then, pick one:
+
+- **Run the stack on an amd64 host** — which is what LF-8 ([section 15](#15-deployment-target-lf-8))
+  already decides for anything real. This is the only option that gives you a
+  durable event log today, and it is the right one for the decision gate.
+- **`:in-memory? true` for throwaway validation only.** It bypasses Fluree
+  entirely and persists nothing — see the carve-out in
+  [section 14](#14-security-posture) before you reach for it.
+
+Reproduced in full, with what it does and does not invalidate, in
+[`doc/lf38-verification.md`](../doc/lf38-verification.md).
+
 **`/api/*` returns 404.** The `:api` feature flag did not reach the server —
 when it is off the routes are never registered, so you get 404 rather than 401.
 Check the rendered `CONFIG_EDN`. A 401 instead means the flag is on and your
@@ -506,7 +528,15 @@ matters.
   the raw event log to anyone who can reach the port.
 - **Never add `:nrepl` to `CONFIG_EDN`.** It starts an unauthenticated remote
   REPL — arbitrary code execution on a reachable host.
-- **Never set `:in-memory? true`.** It silently persists nothing.
+- **Never set `:in-memory? true` on a stack holding anything you would miss.**
+  It silently persists nothing: writes live in DataScript and a local snapshot,
+  Fluree is never touched, and the graph is gone on a wipe or a mode switch. The
+  one legitimate use is a throwaway validation run against a graph you are
+  willing to lose — the LF-38 verification pass did exactly that, because
+  emulated Fluree could not accept writes at all
+  ([section 13](#13-troubleshooting)). If you do it, say so in whatever you
+  report: results from an in-memory run do not establish durability, and a
+  reader will otherwise assume they do.
 - **Telemetry is on by default** in the stock images ([section 8](#8-turn-off-telemetry)).
 
 Practical consequence: on an untrusted network, bind to localhost
